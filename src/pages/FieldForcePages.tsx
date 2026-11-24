@@ -62,6 +62,7 @@ export const FFDashboardPage: React.FC = () => {
     const res = await querySOPAssistant('unassigned');
     setAiBusy(false);
     if (res.answer) setAiInsight(res.answer);
+    else if (res.error) setAiInsight(res.error);
   };
 
   return (
@@ -258,7 +259,17 @@ export const FFDashboardPage: React.FC = () => {
 };
 
 export const FFEmployeesPage: React.FC = () => {
-  const { employees, shifts, assignments, attendance, addEmployee, updateEmployeeStatus, currentRole } = useApp();
+  const {
+    employees,
+    members,
+    shifts,
+    assignments,
+    attendance,
+    addEmployee,
+    updateEmployeeStatus,
+    updateEmployee,
+    currentRole,
+  } = useApp();
   const [badge, setBadge] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -266,18 +277,38 @@ export const FFEmployeesPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | Employee['status']>('all');
   const [page, setPage] = useState(1);
-  const [selectedEmp, setSelectedEmp] = useState<Employee | null>(null);
+  const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
+  const [editFirst, setEditFirst] = useState('');
+  const [editLast, setEditLast] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editUserId, setEditUserId] = useState('');
   const [pendingStatusChange, setPendingStatusChange] = useState<{ emp: Employee; nextStatus: Employee['status'] } | null>(
     null
   );
-  const [error, setError] = useState('');
+  const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
+  const [drawerFeedback, setDrawerFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
   const PAGE_SIZE = 8;
   const canEdit = Boolean(currentRole && ['owner', 'admin', 'operations_manager', 'hr_manager'].includes(currentRole));
 
+  const selectedEmp = useMemo(
+    () => employees.find((e) => e.id === selectedEmpId) || null,
+    [employees, selectedEmpId]
+  );
+
+  useEffect(() => {
+    if (selectedEmp) {
+      setEditFirst(selectedEmp.first_name);
+      setEditLast(selectedEmp.last_name);
+      setEditPhone(selectedEmp.phone);
+      setEditUserId(selectedEmp.user_id || '');
+      setDrawerFeedback(null);
+    }
+  }, [selectedEmp]);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setFeedback(null);
     const res = await addEmployee({
       employee_number: badge,
       first_name: firstName,
@@ -286,21 +317,39 @@ export const FFEmployeesPage: React.FC = () => {
       status: 'active',
       hire_date: todayNairobiDate(),
     });
-    if (res.error) setError(res.error);
+    if (res.error) setFeedback({ tone: 'error', msg: res.error });
     else {
       setBadge('');
       setFirstName('');
       setLastName('');
       setPhone('+2547');
+      setFeedback({ tone: 'success', msg: 'Guard added to organisation directory.' });
     }
   };
 
   const handleStatusSelect = async (emp: Employee, nextStatus: Employee['status']) => {
+    setFeedback(null);
     if (nextStatus === 'suspended' || nextStatus === 'inactive') {
       setPendingStatusChange({ emp, nextStatus });
       return;
     }
-    await updateEmployeeStatus(emp.id, nextStatus);
+    const res = await updateEmployeeStatus(emp.id, nextStatus);
+    if (res.error) setFeedback({ tone: 'error', msg: res.error });
+    else setFeedback({ tone: 'success', msg: `Updated ${emp.first_name} ${emp.last_name} to "${nextStatus}".` });
+  };
+
+  const handleSaveEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedEmp) return;
+    setDrawerFeedback(null);
+    const res = await updateEmployee(selectedEmp.id, {
+      first_name: editFirst,
+      last_name: editLast,
+      phone: editPhone,
+      user_id: editUserId || null,
+    });
+    if (res.error) setDrawerFeedback({ tone: 'error', msg: res.error });
+    else setDrawerFeedback({ tone: 'success', msg: 'Guard profile & portal link saved.' });
   };
 
   const filtered = useMemo(() => {
@@ -356,14 +405,11 @@ export const FFEmployeesPage: React.FC = () => {
         ))}
       </div>
 
+      {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
+
       {canEdit && (
         <Card className="p-5">
           <h2 className="text-sm font-semibold text-slate-900 mb-3">Onboard Security Guard</h2>
-          {error && (
-            <div className="mb-3">
-              <InlineAlert tone="error">{error}</InlineAlert>
-            </div>
-          )}
           <form onSubmit={submit} className="grid sm:grid-cols-5 gap-3">
             <input
               required
@@ -443,7 +489,7 @@ export const FFEmployeesPage: React.FC = () => {
                       )}
                     </td>
                     <td className="p-3 text-right">
-                      <Button variant="ghost" size="sm" onClick={() => setSelectedEmp(emp)}>
+                      <Button variant="ghost" size="sm" onClick={() => setSelectedEmpId(emp.id)}>
                         <Eye className="h-3.5 w-3.5" /> View
                       </Button>
                     </td>
@@ -486,7 +532,7 @@ export const FFEmployeesPage: React.FC = () => {
                   ) : (
                     <span className="text-xs text-slate-500 font-mono">Hired {emp.hire_date}</span>
                   )}
-                  <Button variant="secondary" size="sm" onClick={() => setSelectedEmp(emp)}>
+                  <Button variant="secondary" size="sm" onClick={() => setSelectedEmpId(emp.id)}>
                     View Profile
                   </Button>
                 </div>
@@ -499,15 +545,17 @@ export const FFEmployeesPage: React.FC = () => {
         </>
       )}
 
-      {/* Employee Profile Drawer */}
+      {/* Employee Profile & Edit Drawer */}
       <Drawer
         open={Boolean(selectedEmp)}
         title={selectedEmp ? `${selectedEmp.first_name} ${selectedEmp.last_name}` : 'Employee Profile'}
         subtitle={selectedEmp ? `Badge ${selectedEmp.employee_number} · ${selectedEmp.phone}` : ''}
-        onClose={() => setSelectedEmp(null)}
+        onClose={() => setSelectedEmpId(null)}
       >
         {selectedEmp && (
           <div className="space-y-6">
+            {drawerFeedback && <InlineAlert tone={drawerFeedback.tone}>{drawerFeedback.msg}</InlineAlert>}
+
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
                 <div className="text-slate-500">Status</div>
@@ -520,6 +568,53 @@ export const FFEmployeesPage: React.FC = () => {
                 <div className="font-mono font-semibold text-slate-900 mt-0.5">{selectedEmp.hire_date}</div>
               </div>
             </div>
+
+            {canEdit && (
+              <form onSubmit={handleSaveEmployee} className="space-y-3 p-4 border border-slate-200 rounded-lg bg-slate-50">
+                <div className="text-xs font-semibold text-slate-700">Edit Details &amp; Portal Account Link</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    required
+                    value={editFirst}
+                    onChange={(e) => setEditFirst(e.target.value)}
+                    placeholder="First Name"
+                    className="border border-slate-300 rounded-lg px-2.5 py-2 text-xs bg-white"
+                  />
+                  <input
+                    required
+                    value={editLast}
+                    onChange={(e) => setEditLast(e.target.value)}
+                    placeholder="Last Name"
+                    className="border border-slate-300 rounded-lg px-2.5 py-2 text-xs bg-white"
+                  />
+                </div>
+                <input
+                  required
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="+2547..."
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-xs font-mono bg-white"
+                />
+                <FormField label="Linked User Account (allows Guard self clock-in)" htmlFor="emp-user-link">
+                  <select
+                    id="emp-user-link"
+                    value={editUserId}
+                    onChange={(e) => setEditUserId(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-2.5 py-2 text-xs bg-white"
+                  >
+                    <option value="">Not linked to login account</option>
+                    {members.map((m) => (
+                      <option key={m.user_id} value={m.user_id}>
+                        {m.full_name} ({m.role} · {m.email})
+                      </option>
+                    ))}
+                  </select>
+                </FormField>
+                <Button type="submit" size="sm">
+                  Save Guard Profile
+                </Button>
+              </form>
+            )}
 
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
@@ -575,7 +670,6 @@ export const FFEmployeesPage: React.FC = () => {
         )}
       </Drawer>
 
-      {/* Destructive / High-Impact Status Confirmation Dialog */}
       <ConfirmDialog
         open={Boolean(pendingStatusChange)}
         title="Confirm Guard Status Change"
@@ -589,7 +683,9 @@ export const FFEmployeesPage: React.FC = () => {
         onCancel={() => setPendingStatusChange(null)}
         onConfirm={async () => {
           if (pendingStatusChange) {
-            await updateEmployeeStatus(pendingStatusChange.emp.id, pendingStatusChange.nextStatus);
+            const res = await updateEmployeeStatus(pendingStatusChange.emp.id, pendingStatusChange.nextStatus);
+            if (res.error) setFeedback({ tone: 'error', msg: res.error });
+            else setFeedback({ tone: 'success', msg: `Guard status updated to "${pendingStatusChange.nextStatus}".` });
             setPendingStatusChange(null);
           }
         }}
@@ -599,31 +695,42 @@ export const FFEmployeesPage: React.FC = () => {
 };
 
 export const FFClientsPage: React.FC = () => {
-  const { clients, sites, addClient, currentRole } = useApp();
+  const { clients, sites, addClient, toggleClientStatus, currentRole } = useApp();
   const [code, setCode] = useState('');
   const [company, setCompany] = useState('');
   const [contact, setContact] = useState('');
   const [phone, setPhone] = useState('+2547');
+  const [email, setEmail] = useState('');
   const [search, setSearch] = useState('');
-  const [error, setError] = useState('');
+  const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
   const canEdit = Boolean(currentRole && ['owner', 'admin', 'operations_manager'].includes(currentRole));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setFeedback(null);
     const res = await addClient({
       client_code: code,
       company_name: company,
       contact_person: contact,
       contact_phone: phone,
+      contact_email: email.trim() || undefined,
     });
-    if (res.error) setError(res.error);
+    if (res.error) setFeedback({ tone: 'error', msg: res.error });
     else {
       setCode('');
       setCompany('');
       setContact('');
       setPhone('+2547');
+      setEmail('');
+      setFeedback({ tone: 'success', msg: 'Client account registered.' });
     }
+  };
+
+  const handleToggleClient = async (id: string, nextActive: boolean) => {
+    setFeedback(null);
+    const res = await toggleClientStatus(id, nextActive);
+    if (res.error) setFeedback({ tone: 'error', msg: res.error });
+    else setFeedback({ tone: 'success', msg: `Client marked as ${nextActive ? 'Active' : 'Inactive'}.` });
   };
 
   const filtered = clients.filter(
@@ -650,15 +757,12 @@ export const FFClientsPage: React.FC = () => {
         }
       />
 
+      {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
+
       {canEdit && (
         <Card className="p-5">
           <h2 className="text-sm font-semibold text-slate-900 mb-3">Register Client Account</h2>
-          {error && (
-            <div className="mb-3">
-              <InlineAlert tone="error">{error}</InlineAlert>
-            </div>
-          )}
-          <form onSubmit={submit} className="grid sm:grid-cols-5 gap-3">
+          <form onSubmit={submit} className="grid sm:grid-cols-6 gap-3">
             <input
               required
               placeholder="Code (CL-003)"
@@ -687,6 +791,13 @@ export const FFClientsPage: React.FC = () => {
               onChange={(e) => setPhone(e.target.value)}
               className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]"
             />
+            <input
+              type="email"
+              placeholder="Contact Email (opt)"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[42px]"
+            />
             <Button type="submit">Add Client</Button>
           </form>
         </Card>
@@ -699,16 +810,30 @@ export const FFClientsPage: React.FC = () => {
           {filtered.map((c) => {
             const siteCount = sites.filter((s) => s.client_id === c.id).length;
             return (
-              <Card key={c.id} className="p-5">
-                <div className="flex justify-between items-center text-xs">
-                  <span className="font-mono text-slate-500">{c.client_code}</span>
-                  <StatusLabel label={c.is_active ? 'Active' : 'Inactive'} tone={c.is_active ? 'emerald' : 'slate'} />
+              <Card key={c.id} className="p-5 flex flex-col justify-between gap-3">
+                <div>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-mono text-slate-500">{c.client_code}</span>
+                    <StatusLabel label={c.is_active ? 'Active' : 'Inactive'} tone={c.is_active ? 'emerald' : 'slate'} />
+                  </div>
+                  <h3 className="font-bold text-slate-900 mt-2">{c.company_name}</h3>
+                  <p className="text-xs text-slate-600 mt-1">
+                    POC: {c.contact_person} · <span className="font-mono">{c.contact_phone}</span>
+                    {c.contact_email ? ` · ${c.contact_email}` : ''} ·{' '}
+                    <span className="font-mono">{siteCount} site(s)</span>
+                  </p>
                 </div>
-                <h3 className="font-bold text-slate-900 mt-2">{c.company_name}</h3>
-                <p className="text-xs text-slate-600 mt-1">
-                  POC: {c.contact_person} · <span className="font-mono">{c.contact_phone}</span> ·{' '}
-                  <span className="font-mono">{siteCount} site(s)</span>
-                </p>
+                {canEdit && (
+                  <div className="pt-2 border-t border-slate-100 flex justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleToggleClient(c.id, !c.is_active)}
+                    >
+                      {c.is_active ? 'Deactivate Client' : 'Reactivate Client'}
+                    </Button>
+                  </div>
+                )}
               </Card>
             );
           })}
@@ -719,7 +844,20 @@ export const FFClientsPage: React.FC = () => {
 };
 
 export const FFSitesPage: React.FC = () => {
-  const { clients, sites, posts, members, siteSupervisors, addSite, addPost, assignSiteSupervisor, currentRole } = useApp();
+  const {
+    clients,
+    sites,
+    posts,
+    members,
+    siteSupervisors,
+    addSite,
+    toggleSiteStatus,
+    addPost,
+    updatePost,
+    assignSiteSupervisor,
+    removeSiteSupervisor,
+    currentRole,
+  } = useApp();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = searchParams.get('view') === 'posts' ? 'posts' : 'sites';
 
@@ -733,23 +871,44 @@ export const FFSitesPage: React.FC = () => {
   const [instructions, setInstructions] = useState('');
   const [supSiteId, setSupSiteId] = useState('');
   const [supUserId, setSupUserId] = useState('');
+  const [editingPostId, setEditingPostId] = useState<string | null>(null);
+  const [editPostName, setEditPostName] = useState('');
+  const [editReqGuards, setEditReqGuards] = useState(1);
+  const [editInstructions, setEditInstructions] = useState('');
   const [search, setSearch] = useState('');
-  const [feedback, setFeedback] = useState<string>('');
+  const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
   const canEdit = Boolean(currentRole && ['owner', 'admin', 'operations_manager'].includes(currentRole));
-  const supervisors = members.filter((m) => m.role === 'supervisor' || m.role === 'operations_manager');
+  const supervisors = useMemo(
+    () => members.filter((m) => m.role === 'supervisor' || m.role === 'operations_manager' || m.role === 'owner' || m.role === 'admin'),
+    [members]
+  );
 
   useEffect(() => {
-    if (!clientId && clients[0]?.id) setClientId(clients[0].id);
+    if ((!clientId || !clients.some((c) => c.id === clientId)) && clients[0]?.id) {
+      setClientId(clients[0].id);
+    } else if (clients.length === 0) {
+      setClientId('');
+    }
   }, [clients, clientId]);
 
   useEffect(() => {
-    if (!postSiteId && sites[0]?.id) setPostSiteId(sites[0].id);
-    if (!supSiteId && sites[0]?.id) setSupSiteId(sites[0].id);
+    if ((!postSiteId || !sites.some((s) => s.id === postSiteId)) && sites[0]?.id) {
+      setPostSiteId(sites[0].id);
+    } else if (sites.length === 0) {
+      setPostSiteId('');
+    }
+    if ((!supSiteId || !sites.some((s) => s.id === supSiteId)) && sites[0]?.id) {
+      setSupSiteId(sites[0].id);
+    } else if (sites.length === 0) {
+      setSupSiteId('');
+    }
   }, [sites, postSiteId, supSiteId]);
 
   useEffect(() => {
-    if (!supUserId && supervisors[0]?.user_id) setSupUserId(supervisors[0].user_id);
+    if ((!supUserId || !supervisors.some((m) => m.user_id === supUserId)) && supervisors[0]?.user_id) {
+      setSupUserId(supervisors[0].user_id);
+    }
   }, [supervisors, supUserId]);
 
   const filteredSites = sites.filter(
@@ -803,7 +962,7 @@ export const FFSitesPage: React.FC = () => {
         </button>
       </div>
 
-      {feedback && <InlineAlert tone="success">{feedback}</InlineAlert>}
+      {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
 
       {canEdit && (
         <div className="grid lg:grid-cols-3 gap-4">
@@ -812,12 +971,17 @@ export const FFSitesPage: React.FC = () => {
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!clientId) return;
+                setFeedback(null);
+                if (!clientId) {
+                  setFeedback({ tone: 'error', msg: 'Create a client account first before adding a site.' });
+                  return;
+                }
                 const res = await addSite({ client_id: clientId, name: siteName, city, location_description: desc });
-                if (!res.error) {
+                if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                else {
                   setSiteName('');
                   setDesc('');
-                  setFeedback('Physical site created.');
+                  setFeedback({ tone: 'success', msg: 'Physical site created.' });
                 }
               }}
               className="space-y-2.5"
@@ -827,11 +991,15 @@ export const FFSitesPage: React.FC = () => {
                 onChange={(e) => setClientId(e.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[40px]"
               >
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.company_name}
-                  </option>
-                ))}
+                {clients.length === 0 ? (
+                  <option value="">No clients registered yet</option>
+                ) : (
+                  clients.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.company_name}
+                    </option>
+                  ))
+                )}
               </select>
               <input
                 required
@@ -855,7 +1023,9 @@ export const FFSitesPage: React.FC = () => {
                   className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[40px]"
                 />
               </div>
-              <Button type="submit" className="w-full">Create Site</Button>
+              <Button type="submit" className="w-full">
+                Create Site
+              </Button>
             </form>
           </Card>
 
@@ -864,17 +1034,22 @@ export const FFSitesPage: React.FC = () => {
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!postSiteId) return;
+                setFeedback(null);
+                if (!postSiteId) {
+                  setFeedback({ tone: 'error', msg: 'Create a site first before adding a manned post.' });
+                  return;
+                }
                 const res = await addPost({
                   site_id: postSiteId,
                   name: postName,
                   required_guards: reqGuards,
                   instructions: instructions || 'Standard access control SOP.',
                 });
-                if (!res.error) {
+                if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                else {
                   setPostName('');
                   setInstructions('');
-                  setFeedback('Manned security post added.');
+                  setFeedback({ tone: 'success', msg: 'Manned security post added.' });
                 }
               }}
               className="space-y-2.5"
@@ -884,11 +1059,15 @@ export const FFSitesPage: React.FC = () => {
                 onChange={(e) => setPostSiteId(e.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[40px]"
               >
-                {sites.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
+                {sites.length === 0 ? (
+                  <option value="">No sites created yet</option>
+                ) : (
+                  sites.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))
+                )}
               </select>
               <div className="grid grid-cols-3 gap-2">
                 <input
@@ -913,7 +1092,9 @@ export const FFSitesPage: React.FC = () => {
                 onChange={(e) => setInstructions(e.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[40px]"
               />
-              <Button type="submit" className="w-full">Add Post</Button>
+              <Button type="submit" className="w-full">
+                Add Post
+              </Button>
             </form>
           </Card>
 
@@ -922,9 +1103,14 @@ export const FFSitesPage: React.FC = () => {
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!supSiteId || !supUserId) return;
+                setFeedback(null);
+                if (!supSiteId || !supUserId) {
+                  setFeedback({ tone: 'error', msg: 'Select both a site and an active team member.' });
+                  return;
+                }
                 const res = await assignSiteSupervisor(supSiteId, supUserId);
-                if (!res.error) setFeedback('Supervisor linked to site.');
+                if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                else setFeedback({ tone: 'success', msg: 'Supervisor linked to site.' });
               }}
               className="space-y-2.5"
             >
@@ -933,11 +1119,15 @@ export const FFSitesPage: React.FC = () => {
                 onChange={(e) => setSupSiteId(e.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[40px]"
               >
-                {sites.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
+                {sites.length === 0 ? (
+                  <option value="">No sites created yet</option>
+                ) : (
+                  sites.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))
+                )}
               </select>
               <select
                 value={supUserId}
@@ -959,43 +1149,94 @@ export const FFSitesPage: React.FC = () => {
       )}
 
       {activeTab === 'sites' ? (
-        <div className="space-y-4">
-          {filteredSites.map((s) => {
-            const sitePosts = posts.filter((p) => p.site_id === s.id);
-            const linkedSups = siteSupervisors
-              .filter((ss) => ss.site_id === s.id)
-              .map((ss) => members.find((m) => m.user_id === ss.user_id)?.full_name)
-              .filter(Boolean);
+        filteredSites.length === 0 ? (
+          <EmptyState title="No sites available" description="Create a physical site or check your supervisor scope." />
+        ) : (
+          <div className="space-y-4">
+            {filteredSites.map((s) => {
+              const sitePosts = posts.filter((p) => p.site_id === s.id);
+              const linkedSups = siteSupervisors.filter((ss) => ss.site_id === s.id);
 
-            return (
-              <Card key={s.id} className="p-5">
-                <div className="flex flex-wrap justify-between items-start gap-2 mb-3">
-                  <div>
-                    <h3 className="font-bold text-slate-900">{s.name}</h3>
-                    <p className="text-xs text-slate-500">
-                      {s.location_description ? `${s.location_description} · ` : ''}
-                      {s.city}
-                      {linkedSups.length > 0 ? ` · Supervisors: ${linkedSups.join(', ')}` : ''}
-                    </p>
-                  </div>
-                  <span className="text-xs font-mono text-slate-600 tabular-nums">{sitePosts.length} Post(s)</span>
-                </div>
-
-                <div className="grid sm:grid-cols-3 gap-3 border-t border-slate-100 pt-3">
-                  {sitePosts.map((p) => (
-                    <div key={p.id} className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs">
-                      <div className="font-semibold text-slate-900">{p.name}</div>
-                      <div className="text-slate-500 mt-0.5 font-mono tabular-nums">
-                        Required Guards: {p.required_guards}
+              return (
+                <Card key={s.id} className="p-5">
+                  <div className="flex flex-wrap justify-between items-start gap-2 mb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-bold text-slate-900">{s.name}</h3>
+                        <StatusLabel label={s.is_active ? 'Active' : 'Inactive'} tone={s.is_active ? 'emerald' : 'slate'} />
                       </div>
-                      {p.instructions && <div className="text-slate-600 mt-1">{p.instructions}</div>}
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {s.location_description ? `${s.location_description} · ` : ''}
+                        {s.city}
+                      </p>
+                      {linkedSups.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {linkedSups.map((ss) => {
+                            const supName = members.find((m) => m.user_id === ss.user_id)?.full_name || ss.user_id;
+                            return (
+                              <span
+                                key={ss.id}
+                                className="inline-flex items-center gap-1 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded text-[11px] text-slate-700"
+                              >
+                                Supervisor: {supName}
+                                {canEdit && (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      setFeedback(null);
+                                      const res = await removeSiteSupervisor(ss.id);
+                                      if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                                      else setFeedback({ tone: 'success', msg: 'Supervisor unlinked from site.' });
+                                    }}
+                                    aria-label="Unlink supervisor"
+                                    className="text-rose-600 font-bold ml-1 cursor-pointer"
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-mono text-slate-600 tabular-nums">{sitePosts.length} Post(s)</span>
+                      {canEdit && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={async () => {
+                            setFeedback(null);
+                            const res = await toggleSiteStatus(s.id, !s.is_active);
+                            if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                            else setFeedback({ tone: 'success', msg: `Site marked ${!s.is_active ? 'Active' : 'Inactive'}.` });
+                          }}
+                        >
+                          {s.is_active ? 'Deactivate' : 'Activate'}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid sm:grid-cols-3 gap-3 border-t border-slate-100 pt-3">
+                    {sitePosts.map((p) => (
+                      <div key={p.id} className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs">
+                        <div className="font-semibold text-slate-900">{p.name}</div>
+                        <div className="text-slate-500 mt-0.5 font-mono tabular-nums">
+                          Required Guards: {p.required_guards}
+                        </div>
+                        {p.instructions && <div className="text-slate-600 mt-1">{p.instructions}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        )
+      ) : filteredPosts.length === 0 ? (
+        <EmptyState title="No manned posts" description="Add a security post under any active site." />
       ) : (
         <Card className="overflow-x-auto">
           <table className="w-full text-sm text-left">
@@ -1005,17 +1246,96 @@ export const FFSitesPage: React.FC = () => {
                 <th className="p-3 font-medium">Site</th>
                 <th className="p-3 font-medium">Required Guards</th>
                 <th className="p-3 font-medium">Standing Orders</th>
+                {canEdit && <th className="p-3 font-medium text-right">Action</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredPosts.map((p) => (
-                <tr key={p.id} className="hover:bg-slate-50">
-                  <td className="p-3 font-semibold text-slate-900">{p.name}</td>
-                  <td className="p-3 text-slate-600">{sites.find((s) => s.id === p.site_id)?.name || 'Site'}</td>
-                  <td className="p-3 font-mono tabular-nums">{p.required_guards}</td>
-                  <td className="p-3 text-xs text-slate-600">{p.instructions}</td>
-                </tr>
-              ))}
+              {filteredPosts.map((p) => {
+                const isEditing = editingPostId === p.id;
+                return (
+                  <tr key={p.id} className="hover:bg-slate-50">
+                    <td className="p-3 font-semibold text-slate-900">
+                      {isEditing ? (
+                        <input
+                          value={editPostName}
+                          onChange={(e) => setEditPostName(e.target.value)}
+                          className="border border-slate-300 rounded px-2 py-1 text-xs w-full"
+                        />
+                      ) : (
+                        p.name
+                      )}
+                    </td>
+                    <td className="p-3 text-slate-600">{sites.find((s) => s.id === p.site_id)?.name || 'Site'}</td>
+                    <td className="p-3 font-mono tabular-nums">
+                      {isEditing ? (
+                        <input
+                          type="number"
+                          min={1}
+                          max={20}
+                          value={editReqGuards}
+                          onChange={(e) => setEditReqGuards(Number(e.target.value))}
+                          className="border border-slate-300 rounded px-2 py-1 text-xs w-20 font-mono"
+                        />
+                      ) : (
+                        p.required_guards
+                      )}
+                    </td>
+                    <td className="p-3 text-xs text-slate-600">
+                      {isEditing ? (
+                        <input
+                          value={editInstructions}
+                          onChange={(e) => setEditInstructions(e.target.value)}
+                          className="border border-slate-300 rounded px-2 py-1 text-xs w-full"
+                        />
+                      ) : (
+                        p.instructions
+                      )}
+                    </td>
+                    {canEdit && (
+                      <td className="p-3 text-right whitespace-nowrap">
+                        {isEditing ? (
+                          <div className="inline-flex gap-1.5">
+                            <Button
+                              size="sm"
+                              onClick={async () => {
+                                setFeedback(null);
+                                const res = await updatePost(p.id, {
+                                  name: editPostName,
+                                  required_guards: editReqGuards,
+                                  instructions: editInstructions,
+                                });
+                                if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                                else {
+                                  setEditingPostId(null);
+                                  setFeedback({ tone: 'success', msg: 'Post requirements updated.' });
+                                }
+                              }}
+                            >
+                              Save
+                            </Button>
+                            <Button variant="ghost" size="sm" onClick={() => setEditingPostId(null)}>
+                              Cancel
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setEditingPostId(p.id);
+                              setEditPostName(p.name);
+                              setEditReqGuards(p.required_guards);
+                              setEditInstructions(p.instructions);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </Card>
@@ -1032,25 +1352,50 @@ export const FFSchedulePage: React.FC = () => {
   const [postId, setPostId] = useState('');
   const [date, setDate] = useState(todayNairobiDate());
   const [shiftType, setShiftType] = useState<'day' | 'night' | 'special'>('day');
+  const [customStart, setCustomStart] = useState('08:00');
+  const [customEnd, setCustomEnd] = useState('16:00');
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [selectedEmp, setSelectedEmp] = useState<Record<string, string>>({});
   const [pendingRemoval, setPendingRemoval] = useState<{ id: string; label: string } | null>(null);
-  const [error, setError] = useState('');
+  const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
   useEffect(() => {
-    if (!postId && posts[0]?.id) setPostId(posts[0].id);
+    if ((!postId || !posts.some((p) => p.id === postId)) && posts[0]?.id) {
+      setPostId(posts[0].id);
+    } else if (posts.length === 0) {
+      setPostId('');
+    }
   }, [posts, postId]);
 
   const canPublish = Boolean(currentRole && ['owner', 'admin', 'operations_manager'].includes(currentRole));
   const canAssign = Boolean(currentRole && ['owner', 'admin', 'operations_manager', 'supervisor'].includes(currentRole));
 
+  const nextCalendarDate = (isoDate: string): string => {
+    const dt = new Date(`${isoDate}T00:00:00Z`);
+    dt.setUTCDate(dt.getUTCDate() + 1);
+    return dt.toISOString().slice(0, 10);
+  };
+
   const handleCreateShift = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setFeedback(null);
     const post = posts.find((p) => p.id === postId);
-    if (!post) return;
-    const start_time = shiftType === 'day' ? `${date}T06:00:00+03:00` : `${date}T18:00:00+03:00`;
-    const end_time = shiftType === 'day' ? `${date}T18:00:00+03:00` : `${date}T23:59:00+03:00`;
+    if (!post) {
+      setFeedback({ tone: 'error', msg: 'Add a manned post under Operations -> Sites first.' });
+      return;
+    }
+
+    let start_time = `${date}T06:00:00+03:00`;
+    let end_time = `${date}T18:00:00+03:00`;
+    if (shiftType === 'night') {
+      start_time = `${date}T18:00:00+03:00`;
+      end_time = `${nextCalendarDate(date)}T06:00:00+03:00`;
+    } else if (shiftType === 'special') {
+      start_time = `${date}T${customStart}:00+03:00`;
+      const endDate = customEnd <= customStart ? nextCalendarDate(date) : date;
+      end_time = `${endDate}T${customEnd}:00+03:00`;
+    }
+
     const res = await addShift({
       site_id: post.site_id,
       post_id: post.id,
@@ -1059,18 +1404,23 @@ export const FFSchedulePage: React.FC = () => {
       end_time,
       shift_type: shiftType,
     });
-    if (res.error) setError(res.error);
+    if (res.error) setFeedback({ tone: 'error', msg: res.error });
+    else setFeedback({ tone: 'success', msg: `${shiftType.toUpperCase()} shift published for ${post.name}.` });
   };
 
   const handleAssign = async (shiftId: string) => {
-    setError('');
+    setFeedback(null);
     const empId = selectedEmp[shiftId];
     if (!empId) {
-      setError('Select an active guard before clicking Assign.');
+      setFeedback({ tone: 'error', msg: 'Select an active guard before clicking Assign.' });
       return;
     }
     const res = await assignGuard(shiftId, empId);
-    if (res.error) setError(res.error);
+    if (res.error) setFeedback({ tone: 'error', msg: res.error });
+    else {
+      setSelectedEmp((prev) => ({ ...prev, [shiftId]: '' }));
+      setFeedback({ tone: 'success', msg: 'Guard assigned to shift.' });
+    }
   };
 
   const filteredShifts = siteFilter === 'all' ? shifts : shifts.filter((s) => s.site_id === siteFilter);
@@ -1116,22 +1466,26 @@ export const FFSchedulePage: React.FC = () => {
       </div>
 
       {canPublish && (
-        <Card className="p-5">
-          <h2 className="text-sm font-semibold text-slate-900 mb-3">Publish New Post Shift</h2>
+        <Card className="p-5 space-y-3">
+          <h2 className="text-sm font-semibold text-slate-900">Publish New Post Shift</h2>
           <form onSubmit={handleCreateShift} className="grid sm:grid-cols-4 gap-3">
             <select
               value={postId}
               onChange={(e) => setPostId(e.target.value)}
               className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]"
             >
-              {posts.map((p) => {
-                const s = sites.find((x) => x.id === p.site_id);
-                return (
-                  <option key={p.id} value={p.id}>
-                    {s?.name} — {p.name}
-                  </option>
-                );
-              })}
+              {posts.length === 0 ? (
+                <option value="">No posts configured</option>
+              ) : (
+                posts.map((p) => {
+                  const s = sites.find((x) => x.id === p.site_id);
+                  return (
+                    <option key={p.id} value={p.id}>
+                      {s?.name} — {p.name}
+                    </option>
+                  );
+                })
+              )}
             </select>
             <input
               type="date"
@@ -1145,15 +1499,38 @@ export const FFSchedulePage: React.FC = () => {
               className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]"
             >
               <option value="day">Day (06:00–18:00 EAT)</option>
-              <option value="night">Night (18:00–00:00 EAT)</option>
-              <option value="special">Special Coverage</option>
+              <option value="night">Night (18:00–06:00 EAT +1d)</option>
+              <option value="special">Special Coverage (Custom)</option>
             </select>
             <Button type="submit">Publish Shift</Button>
+
+            {shiftType === 'special' && (
+              <div className="sm:col-span-4 grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                <FormField label="Start Time (EAT)" htmlFor="sp-start">
+                  <input
+                    id="sp-start"
+                    type="time"
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
+                  />
+                </FormField>
+                <FormField label="End Time (EAT)" htmlFor="sp-end">
+                  <input
+                    id="sp-end"
+                    type="time"
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
+                  />
+                </FormField>
+              </div>
+            )}
           </form>
         </Card>
       )}
 
-      {error && <InlineAlert tone="error">{error}</InlineAlert>}
+      {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
 
       {filteredShifts.length === 0 ? (
         <EmptyState title="No shifts scheduled" description="Publish a post shift to begin assigning active guards." />
@@ -1166,6 +1543,7 @@ export const FFSchedulePage: React.FC = () => {
                 <th className="p-3 font-medium">Site / Post</th>
                 <th className="p-3 font-medium">Coverage</th>
                 <th className="p-3 font-medium">Assigned Guard(s)</th>
+                {canAssign && <th className="p-3 font-medium">Assign Guard</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -1189,14 +1567,54 @@ export const FFSchedulePage: React.FC = () => {
                       {shAsg.length === 0 ? (
                         <span className="text-amber-700 font-medium">Unassigned</span>
                       ) : (
-                        shAsg
-                          .map((a) => {
+                        <div className="flex flex-wrap gap-1.5">
+                          {shAsg.map((a) => {
                             const emp = employees.find((e) => e.id === a.employee_id);
-                            return emp ? `${emp.first_name} ${emp.last_name} (${emp.employee_number})` : a.employee_id;
-                          })
-                          .join(', ')
+                            const label = emp ? `${emp.first_name} ${emp.last_name} (${emp.employee_number})` : a.employee_id;
+                            return (
+                              <span
+                                key={a.id}
+                                className="inline-flex items-center gap-1 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded"
+                              >
+                                {label}
+                                {canAssign && (
+                                  <button
+                                    onClick={() => setPendingRemoval({ id: a.id, label })}
+                                    className="text-rose-600 font-bold ml-1 cursor-pointer"
+                                    aria-label="Remove guard assignment"
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </span>
+                            );
+                          })}
+                        </div>
                       )}
                     </td>
+                    {canAssign && (
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            value={selectedEmp[sh.id] ?? ''}
+                            onChange={(e) => setSelectedEmp({ ...selectedEmp, [sh.id]: e.target.value })}
+                            className="border border-slate-300 rounded px-2 py-1 text-xs bg-white min-h-[34px]"
+                          >
+                            <option value="">Select guard...</option>
+                            {employees
+                              .filter((e) => e.status === 'active')
+                              .map((e) => (
+                                <option key={e.id} value={e.id}>
+                                  {e.employee_number} — {e.first_name} {e.last_name}
+                                </option>
+                              ))}
+                          </select>
+                          <Button size="sm" onClick={() => handleAssign(sh.id)}>
+                            Assign
+                          </Button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -1298,7 +1716,9 @@ export const FFSchedulePage: React.FC = () => {
         onCancel={() => setPendingRemoval(null)}
         onConfirm={async () => {
           if (pendingRemoval) {
-            await removeAssignment(pendingRemoval.id);
+            const res = await removeAssignment(pendingRemoval.id);
+            if (res.error) setFeedback({ tone: 'error', msg: res.error });
+            else setFeedback({ tone: 'success', msg: 'Guard removed from shift assignment.' });
             setPendingRemoval(null);
           }
         }}
@@ -1319,16 +1739,27 @@ export const FFAttendancePage: React.FC = () => {
   const PAGE_SIZE = 10;
 
   useEffect(() => {
-    if (!empId && employees[0]?.id) setEmpId(employees[0].id);
+    if ((!empId || !employees.some((e) => e.id === empId)) && employees[0]?.id) {
+      setEmpId(employees[0].id);
+    } else if (employees.length === 0) {
+      setEmpId('');
+    }
   }, [employees, empId]);
 
   useEffect(() => {
-    if (!shiftId && shifts[0]?.id) setShiftId(shifts[0].id);
+    if (shiftId && !shifts.some((s) => s.id === shiftId)) {
+      setShiftId(shifts[0]?.id || '');
+    } else if (!shiftId && shifts[0]?.id) {
+      setShiftId(shifts[0].id);
+    }
   }, [shifts, shiftId]);
 
   const tapAttendance = (eventType: 'clock_in' | 'clock_out') => {
     setFeedback(null);
-    if (!empId) return;
+    if (!empId) {
+      setFeedback({ tone: 'error', msg: 'No guard record linked to your account. Ask HR/Operations to link your employee profile.' });
+      return;
+    }
 
     const commit = async (loc: { lat: number; lng: number; accuracy: number } | null) => {
       const res = await recordAttendance({
@@ -1557,6 +1988,7 @@ export const FFIncidentsPage: React.FC = () => {
   } = useApp();
 
   const [siteId, setSiteId] = useState('');
+  const [postId, setPostId] = useState('');
   const [category, setCategory] = useState<IncidentCategory>('trespassing');
   const [severity, setSeverity] = useState<IncidentSeverity>('medium');
   const [narrative, setNarrative] = useState('');
@@ -1568,19 +2000,38 @@ export const FFIncidentsPage: React.FC = () => {
   const [aiBusyId, setAiBusyId] = useState<string | null>(null);
   const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
+  const [drawerFeedback, setDrawerFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
   useEffect(() => {
-    if (!siteId && sites[0]?.id) setSiteId(sites[0].id);
+    if ((!siteId || !sites.some((s) => s.id === siteId)) && sites[0]?.id) {
+      setSiteId(sites[0].id);
+    } else if (sites.length === 0) {
+      setSiteId('');
+    }
   }, [sites, siteId]);
+
+  const sitePosts = useMemo(() => posts.filter((p) => p.site_id === siteId), [posts, siteId]);
+
+  useEffect(() => {
+    if (postId && !sitePosts.some((p) => p.id === postId)) {
+      setPostId(sitePosts[0]?.id || '');
+    } else if (!postId && sitePosts[0]?.id) {
+      setPostId(sitePosts[0].id);
+    }
+  }, [sitePosts, postId]);
 
   const canReview = currentRole !== 'guard';
 
   const submitIncident = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
+    if (!siteId) {
+      setFeedback({ tone: 'error', msg: 'No site assigned or created yet for logging incidents.' });
+      return;
+    }
     const res = await reportIncident({
       site_id: siteId,
-      post_id: posts.find((p) => p.site_id === siteId)?.id ?? null,
+      post_id: postId || null,
       category,
       severity,
       narrative,
@@ -1595,18 +2046,44 @@ export const FFIncidentsPage: React.FC = () => {
 
   const handleGenerateAIDraft = async (incId: string) => {
     setFeedback(null);
+    setDrawerFeedback(null);
     setAiBusyId(incId);
     const res = await generateIncidentAIDraft(incId);
     setAiBusyId(null);
-    if (res.error) setFeedback({ tone: 'error', msg: res.error });
+    if (res.error) {
+      setFeedback({ tone: 'error', msg: res.error });
+      setDrawerFeedback({ tone: 'error', msg: res.error });
+    } else {
+      setDrawerFeedback({ tone: 'success', msg: 'AI summary draft generated. Review and approve below.' });
+    }
   };
 
   const handleApproveDraft = async (incId: string, defaultText: string, nextStatus: IncidentStatus) => {
     setFeedback(null);
+    setDrawerFeedback(null);
     const finalSummary = draftEdits[incId] ?? defaultText;
     const res = await approveIncidentAIDraft(incId, finalSummary, nextStatus);
-    if (res.error) setFeedback({ tone: 'error', msg: res.error });
-    else setFeedback({ tone: 'success', msg: 'AI summary approved by human supervisor and saved.' });
+    if (res.error) {
+      setFeedback({ tone: 'error', msg: res.error });
+      setDrawerFeedback({ tone: 'error', msg: res.error });
+    } else {
+      setFeedback({ tone: 'success', msg: 'AI summary approved by human supervisor and saved.' });
+      setDrawerFeedback({ tone: 'success', msg: 'Official supervisor summary approved and saved.' });
+    }
+  };
+
+  const handleReviewStatus = async (incId: string, status: IncidentStatus, notes: string) => {
+    setFeedback(null);
+    setDrawerFeedback(null);
+    const res = await reviewIncident(incId, status, notes);
+    if (res.error) {
+      setFeedback({ tone: 'error', msg: res.error });
+      setDrawerFeedback({ tone: 'error', msg: res.error });
+    } else {
+      const msg = `Incident status updated to "${status.replace('_', ' ')}".`;
+      setFeedback({ tone: 'success', msg });
+      setDrawerFeedback({ tone: 'success', msg });
+    }
   };
 
   const visibleIncidents = incidents.filter((i) => {
@@ -1669,15 +2146,31 @@ export const FFIncidentsPage: React.FC = () => {
           <span>Report Field Incident (Text-Only V1)</span>
         </h2>
         <form onSubmit={submitIncident} className="space-y-3">
-          <div className="grid sm:grid-cols-3 gap-3">
+          <div className="grid sm:grid-cols-4 gap-3">
             <select
               value={siteId}
               onChange={(e) => setSiteId(e.target.value)}
               className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]"
             >
-              {sites.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
+              {sites.length === 0 ? (
+                <option value="">No sites available</option>
+              ) : (
+                sites.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))
+              )}
+            </select>
+            <select
+              value={postId}
+              onChange={(e) => setPostId(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]"
+            >
+              <option value="">General Site Area</option>
+              {sitePosts.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
                 </option>
               ))}
             </select>
@@ -1756,7 +2249,14 @@ export const FFIncidentsPage: React.FC = () => {
                   <div className="text-xs text-slate-500 font-mono tabular-nums">
                     Reported by {inc.reported_by_name} · {formatNairobiDateTime(inc.occurrence_time)}
                   </div>
-                  <Button variant="secondary" size="sm" onClick={() => setSelectedIncidentId(inc.id)}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setDrawerFeedback(null);
+                      setSelectedIncidentId(inc.id);
+                    }}
+                  >
                     <Eye className="h-3.5 w-3.5" /> Open Incident Workspace
                   </Button>
                 </div>
@@ -1777,10 +2277,15 @@ export const FFIncidentsPage: React.FC = () => {
               )}`
             : ''
         }
-        onClose={() => setSelectedIncidentId(null)}
+        onClose={() => {
+          setDrawerFeedback(null);
+          setSelectedIncidentId(null);
+        }}
       >
         {selectedIncident && (
           <div className="space-y-6">
+            {drawerFeedback && <InlineAlert tone={drawerFeedback.tone}>{drawerFeedback.msg}</InlineAlert>}
+
             {/* Metadata Grid */}
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
@@ -1920,7 +2425,7 @@ export const FFIncidentsPage: React.FC = () => {
                     variant="secondary"
                     size="sm"
                     onClick={() =>
-                      reviewIncident(
+                      handleReviewStatus(
                         selectedIncident.id,
                         'under_investigation',
                         reviewNotes[selectedIncident.id] || 'Under investigation'
@@ -1932,7 +2437,7 @@ export const FFIncidentsPage: React.FC = () => {
                   <Button
                     size="sm"
                     onClick={() =>
-                      reviewIncident(
+                      handleReviewStatus(
                         selectedIncident.id,
                         'resolved',
                         reviewNotes[selectedIncident.id] || 'Resolved by supervisor'
@@ -2011,7 +2516,7 @@ export const FFIncidentsPage: React.FC = () => {
         onCancel={() => setConfirmCloseId(null)}
         onConfirm={async () => {
           if (confirmCloseId) {
-            await reviewIncident(
+            await handleReviewStatus(
               confirmCloseId,
               'closed',
               reviewNotes[confirmCloseId] || 'Closed after supervisor review'

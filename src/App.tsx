@@ -12,9 +12,11 @@ import {
 } from './pages/AuthPages';
 import {
   AIAssistantPage,
+  BillingPage,
   DiscoverPage,
   HomePage,
   MyAppsPage,
+  NotificationsPage,
   ProfilePage,
   ReportsPage,
   SettingsPage,
@@ -65,6 +67,8 @@ export default function App() {
 
             <Route path="ai-assistant" element={<AIAssistantPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            <Route path="notifications" element={<NotificationsPage />} />
+            <Route path="billing" element={<BillingPage />} />
             <Route path="settings/organisation" element={<SettingsPage tab="organisation" />} />
             <Route path="settings/members" element={<SettingsPage tab="members" />} />
             <Route path="settings/audit-log" element={<SettingsPage tab="audit" />} />

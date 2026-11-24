@@ -56,12 +56,13 @@ interface NavGroup {
 const NAV_GROUPS: NavGroup[] = [
   {
     id: 'overview',
-    title: 'OVERVIEW',
+    title: 'PLATFORM CORE',
     items: [
-      { label: 'Dashboard', to: '/app/home', icon: Home, matchExact: true },
+      { label: 'Home', to: '/app/home', icon: Home, matchExact: true },
+      { label: 'My AI Apps', to: '/app/my-apps', icon: LayoutGrid },
+      { label: 'Discover Apps', to: '/app/discover', icon: Compass },
       { label: 'FieldForce Command', to: '/app/fieldforce/dashboard', icon: Shield },
-      { label: 'My Apps', to: '/app/my-apps', icon: LayoutGrid },
-      { label: 'Discover Suite', to: '/app/discover', icon: Compass },
+      { label: 'Notifications', to: '/app/notifications', icon: Bell },
     ],
   },
   {
@@ -124,6 +125,7 @@ const NAV_GROUPS: NavGroup[] = [
     id: 'administration',
     title: 'ADMINISTRATION',
     items: [
+      { label: 'Billing', to: '/app/billing', icon: CreditCard },
       { label: 'Team', to: '/app/settings/members', icon: Users, matchExact: true },
       { label: 'Roles', to: '/app/settings/members?view=roles', icon: UserCheck },
       { label: 'Audit Logs', to: '/app/settings/audit-log', icon: Shield },
@@ -133,9 +135,11 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 const ROUTE_TITLES: Record<string, string> = {
-  '/app/home': 'Platform Dashboard',
-  '/app/my-apps': 'My Applications',
-  '/app/discover': '20-Product Suite Catalogue',
+  '/app/home': 'Home · Platform Overview',
+  '/app/my-apps': 'My AI Apps',
+  '/app/discover': 'Discover Apps · 20-Solution Marketplace',
+  '/app/notifications': 'Platform Notifications',
+  '/app/billing': 'Billing & Subscriptions',
   '/app/fieldforce/dashboard': 'FieldForce Command Centre',
   '/app/fieldforce/employees': 'Workforce · Employees',
   '/app/fieldforce/clients': 'Operations · Clients',
@@ -143,11 +147,11 @@ const ROUTE_TITLES: Record<string, string> = {
   '/app/fieldforce/schedule': 'Scheduling · Shifts & Rosters',
   '/app/fieldforce/attendance': 'Scheduling · Attendance',
   '/app/fieldforce/incidents': 'Security · Incident Workspace',
-  '/app/ai-assistant': 'Intelligence · SOP Assistant',
-  '/app/reports': 'Intelligence · Reports & CSV',
-  '/app/settings/organisation': 'Administration · Settings',
-  '/app/settings/members': 'Administration · Team & Roles',
-  '/app/settings/audit-log': 'Administration · Audit Logs',
+  '/app/ai-assistant': 'AI Africa Main Assistant',
+  '/app/reports': 'Combined Reports & CSV',
+  '/app/settings/organisation': 'Settings · Organisation',
+  '/app/settings/members': 'Settings · Team & Roles',
+  '/app/settings/audit-log': 'Settings · Audit Logs',
   '/app/profile': 'Account Profile',
 };
 

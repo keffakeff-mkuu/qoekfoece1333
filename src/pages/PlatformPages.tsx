@@ -8,16 +8,20 @@ import {
   CalendarClock,
   Check,
   Compass,
+  CreditCard,
   Download,
   Megaphone,
   Search,
+  Send,
   Shield,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { exportToCsv } from '../lib/csv';
 import { formatNairobiDateTime } from '../lib/date';
+import { FOUR_CATEGORIES, PRODUCT_RICH_META } from '../lib/catalogMeta';
 import { getRecentApps } from '../lib/recentApps';
 import type { OrgRole } from '../types/domain';
+import { ProductIcon } from '../components/ProductIcon';
 import {
   Badge,
   Button,
@@ -453,16 +457,20 @@ export const DiscoverPage: React.FC = () => {
   const { catalog, entitlements, toggleWaitlist } = useApp();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'planned_next' | 'waitlisted'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [busySlug, setBusySlug] = useState<string | null>(null);
 
   const waitlistedSlugs = new Set(entitlements.filter((e) => e.status === 'waitlisted').map((e) => e.slug));
 
   const filtered = catalog.filter((p) => {
+    const rich = PRODUCT_RICH_META[p.slug];
     const matchesSearch =
       p.name.toLowerCase().includes(query.toLowerCase()) ||
       p.category.toLowerCase().includes(query.toLowerCase()) ||
-      p.short_description.toLowerCase().includes(query.toLowerCase());
+      p.short_description.toLowerCase().includes(query.toLowerCase()) ||
+      (rich?.whoItServes.toLowerCase().includes(query.toLowerCase()) ?? false);
     if (!matchesSearch) return false;
+    if (categoryFilter !== 'all' && p.category !== categoryFilter) return false;
     if (filter === 'active') return p.status === 'in_development' || p.status === 'live';
     if (filter === 'planned_next') return p.status === 'planned_next';
     if (filter === 'waitlisted') return waitlistedSlugs.has(p.slug);
@@ -478,63 +486,115 @@ export const DiscoverPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Discover — 20-Product Suite"
-        description="Only FieldForce AI is currently open for workspace operations. Join waitlists for upcoming vertical modules."
+        title="Discover Apps — 20-Solution Marketplace"
+        description="Only FieldForce AI (Wave 1) is currently active. Unreleased solutions are labelled Coming soon until all 6 launch gates pass."
         actions={
           <div className="relative w-full sm:w-72">
             <Search className="h-4 w-4 text-slate-400 absolute left-3 top-3" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search products or categories..."
+              placeholder="Search products, audiences, or sectors..."
               className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm bg-white min-h-[42px]"
             />
           </div>
         }
       />
 
-      <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
-        {(
-          [
-            { key: 'all', label: `All (${catalog.length})` },
-            { key: 'active', label: 'Active Workspace' },
-            { key: 'planned_next', label: 'Planned Next' },
-            { key: 'waitlisted', label: `Waitlisted (${waitlistedSlugs.size})` },
-          ] as const
-        ).map((tab) => (
+      {/* Filter Bars: Status & 4 Categories */}
+      <div className="flex flex-col gap-3">
+        <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
+          {(
+            [
+              { key: 'all', label: `All (${catalog.length})` },
+              { key: 'active', label: 'Building now' },
+              { key: 'planned_next', label: 'Next (BiasharaOS)' },
+              { key: 'waitlisted', label: `Waitlisted (${waitlistedSlugs.size})` },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setFilter(tab.key)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                filter === tab.key ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
           <button
-            key={tab.key}
-            onClick={() => setFilter(tab.key)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-              filter === tab.key ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            onClick={() => setCategoryFilter('all')}
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+              categoryFilter === 'all'
+                ? 'border-[#0B132B] bg-[#0B132B] text-white'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
             }`}
           >
-            {tab.label}
+            All Categories
           </button>
-        ))}
+          {FOUR_CATEGORIES.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setCategoryFilter(categoryFilter === cat ? 'all' : cat)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                categoryFilter === cat
+                  ? 'border-[#059669] bg-emerald-50 text-emerald-900'
+                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
       </div>
 
       {filtered.length === 0 ? (
         <EmptyState
           title="No matching products"
-          description="Try clearing your search filter or switching tabs to view all 20 suite modules."
+          description="Try clearing your search or category filter to view all 20 AI Africa solutions."
         />
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((p) => {
+            const rich = PRODUCT_RICH_META[p.slug];
             const isWaitlisted = waitlistedSlugs.has(p.slug);
             const tone = p.status === 'in_development' ? 'emerald' : p.status === 'planned_next' ? 'amber' : 'slate';
             const statusText =
-              p.status === 'in_development' ? 'In Development' : p.status === 'planned_next' ? 'Planned Next' : 'Planned';
+              rich?.badgeText ||
+              (p.status === 'in_development' ? 'Building now' : p.status === 'planned_next' ? 'Next · Coming soon' : 'Coming soon');
 
             return (
               <Card key={p.id} className="p-5 flex flex-col justify-between">
                 <div>
-                  <div className="text-xs font-mono tabular-nums text-slate-500">
-                    {String(p.display_order).padStart(2, '0')} · {p.category}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="h-9 w-9 rounded-lg bg-slate-100 text-[#0B132B] flex items-center justify-center shrink-0">
+                        <ProductIcon name={rich?.icon} className="h-4 w-4" />
+                      </div>
+                      <div className="text-xs font-mono tabular-nums text-slate-500">
+                        Wave {String(rich?.wave ?? p.display_order).padStart(2, '0')} · {p.category}
+                      </div>
+                    </div>
                   </div>
-                  <h3 className="font-semibold text-base text-slate-900 mt-2">{p.name}</h3>
-                  <p className="text-sm text-slate-600 mt-1.5">{p.short_description}</p>
+                  <h3 className="font-bold text-base text-slate-900 mt-3">{p.name}</h3>
+                  <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
+                    {rich?.problemSolved || p.short_description}
+                  </p>
+                  {rich?.whoItServes && (
+                    <div className="text-xs text-slate-500 mt-2">
+                      <span className="font-semibold text-slate-700">Who it serves:</span> {rich.whoItServes}
+                    </div>
+                  )}
+                  {rich?.features && (
+                    <ul className="mt-2.5 space-y-1 text-xs text-slate-600">
+                      {rich.features.map((f) => (
+                        <li key={f}>• {f}</li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between gap-3">
@@ -570,48 +630,289 @@ export const DiscoverPage: React.FC = () => {
 };
 
 export const AIAssistantPage: React.FC = () => {
-  const { querySOPAssistant } = useApp();
+  const { querySOPAssistant, currentRole } = useApp();
+  const [freeInput, setFreeInput] = useState('');
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState(
-    'Select a deterministic operational check below. Responses are computed directly from stored SQLite tenant records and Kenya Security SOP rules.'
+    'Ask an operational question or select a specialist check below. The AI Orchestrator routes authorised queries only to active product agents and never invents numbers.'
   );
+  const [orchestrator, setOrchestrator] = useState<{
+    routedTo: string;
+    productSlug: string;
+    agentStatus: 'active' | 'coming_soon';
+    gateReason?: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const runCheck = async (topic: string, label: string) => {
+  const runPrompt = async (payload: string, label: string, isFreeText = false) => {
     setBusy(true);
     setQuestion(label);
-    const res = await querySOPAssistant(topic);
+    const res = await querySOPAssistant(payload, isFreeText);
     setBusy(false);
+    if (res.orchestrator) setOrchestrator(res.orchestrator);
     if (res.answer) setAnswer(res.answer);
     else if (res.error) setAnswer(res.error);
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!freeInput.trim()) return;
+    await runPrompt(freeInput.trim(), freeInput.trim(), true);
+  };
+
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-4xl">
       <PageHeader
-        eyebrow="Zero-Hallucination Deterministic Mode"
-        title="Procedural SOP Assistant"
-        description="Queries live SQLite rostering, incident queues, and Kenya DPA 2019 / PSRA operational policies."
+        eyebrow={`AI Africa Main Assistant · Role: ${currentRole?.replace('_', ' ') || 'member'}`}
+        title="AI Orchestrator & Specialist Agents"
+        description="Routes requests across active modules (FieldForce Agent) while gating unreleased modules (BiasharaOS, TradePilot) cleanly."
       />
 
-      <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" disabled={busy} onClick={() => runCheck('unassigned', 'Check Unassigned Shifts')}>
-          <CalendarClock className="h-4 w-4" /> Check Unassigned Shifts
-        </Button>
-        <Button variant="secondary" disabled={busy} onClick={() => runCheck('incidents', 'Check Open Incident Queue')}>
-          <AlertTriangle className="h-4 w-4" /> Check Open Incident Queue
-        </Button>
-        <Button variant="secondary" disabled={busy} onClick={() => runCheck('privacy', 'Kenya DPA 2019 & PSRA V1 Rules')}>
-          <Shield className="h-4 w-4" /> Kenya DPA &amp; PSRA Rules
-        </Button>
-        <Button variant="secondary" disabled={busy} onClick={() => runCheck('override', 'Attendance Override SOP')}>
-          Attendance Override SOP
-        </Button>
+      <Card className="p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2">
+          <input
+            value={freeInput}
+            onChange={(e) => setFreeInput(e.target.value)}
+            placeholder="e.g. How many guards did we deploy? or How much profit did we make?"
+            className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[44px]"
+          />
+          <Button type="submit" disabled={busy || !freeInput.trim()}>
+            <Send className="h-4 w-4" /> Ask Orchestrator
+          </Button>
+        </form>
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={() => runPrompt('How many guards did we deploy this month?', 'Guard Deployment Check', true)}
+          >
+            Check Guard Deployment
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={() => runPrompt('unassigned', 'Check Unassigned Shifts', false)}
+          >
+            <CalendarClock className="h-4 w-4" /> Unassigned Shifts
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={() => runPrompt('incidents', 'Check Open Incident Queue', false)}
+          >
+            <AlertTriangle className="h-4 w-4" /> Open Incidents
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={() => runPrompt('How much profit did my business make this month?', 'Test BiasharaOS Gate', true)}
+          >
+            Test BiasharaOS Gate
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            onClick={() => runPrompt('privacy', 'Kenya DPA 2019 & PSRA Rules', false)}
+          >
+            <Shield className="h-4 w-4" /> Kenya DPA &amp; PSRA
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="p-6 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+          <div className="text-xs font-semibold text-slate-500">
+            {question ? `Request · ${question}` : 'Orchestrator Status'}
+          </div>
+          {orchestrator && (
+            <StatusLabel
+              label={`${orchestrator.routedTo} · ${orchestrator.agentStatus === 'active' ? 'Active Agent' : 'Coming Soon (Gated)'}`}
+              tone={orchestrator.agentStatus === 'active' ? 'emerald' : 'amber'}
+            />
+          )}
+        </div>
+        <p className="text-sm text-slate-800 leading-relaxed">
+          {busy ? 'Routing request through AI Orchestrator...' : answer}
+        </p>
+      </Card>
+    </div>
+  );
+};
+
+export const NotificationsPage: React.FC = () => {
+  const { shifts, posts, assignments, incidents, attendance } = useApp();
+
+  const understaffed = shifts.filter((s) => {
+    const post = posts.find((p) => p.id === s.post_id);
+    const count = assignments.filter((a) => a.shift_id === s.id && a.status !== 'cancelled').length;
+    return count < (post?.required_guards ?? 1);
+  });
+  const pendingAi = incidents.filter((i) => Boolean(i.ai_draft_summary) && !i.ai_approved_at);
+  const openIncidents = incidents.filter((i) => i.status === 'open' || i.status === 'under_investigation');
+  const overrides = attendance.filter((a) => a.event_type === 'supervisor_override');
+
+  const alerts = [
+    ...(understaffed.length > 0
+      ? [
+          {
+            id: 'al-shifts',
+            source: 'FieldForce · Scheduling',
+            title: `${understaffed.length} shift(s) below required post headcount`,
+            detail: 'Assign active guards so sites meet contractual coverage.',
+            to: '/app/fieldforce/schedule',
+            tone: 'amber' as const,
+          },
+        ]
+      : []),
+    ...(pendingAi.length > 0
+      ? [
+          {
+            id: 'al-ai',
+            source: 'FieldForce · AI Approvals',
+            title: `${pendingAi.length} AI incident summary draft(s) pending supervisor approval`,
+            detail: 'Human sign-off required before archiving official report.',
+            to: '/app/fieldforce/incidents',
+            tone: 'amber' as const,
+          },
+        ]
+      : []),
+    ...(openIncidents.length > 0
+      ? [
+          {
+            id: 'al-inc',
+            source: 'FieldForce · Security',
+            title: `${openIncidents.length} open or under-investigation incident(s)`,
+            detail: openIncidents[0].narrative,
+            to: '/app/fieldforce/incidents',
+            tone: 'rose' as const,
+          },
+        ]
+      : []),
+    ...(overrides.length > 0
+      ? [
+          {
+            id: 'al-ovr',
+            source: 'FieldForce · Attendance',
+            title: `${overrides.length} supervisor attendance override(s) recorded`,
+            detail: 'Review audit reasons under Attendance Verification.',
+            to: '/app/fieldforce/attendance',
+            tone: 'navy' as const,
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      <PageHeader
+        eyebrow="Layer 3 · Shared Notifications"
+        title="Platform & Field Alerts"
+        description="Unified alert stream generated directly from active subscribed modules in your organisation."
+      />
+      {alerts.length === 0 ? (
+        <EmptyState
+          title="All caught up"
+          description="No understaffed shifts, pending AI approvals, or open incident escalations."
+        />
+      ) : (
+        <div className="space-y-3">
+          {alerts.map((al) => (
+            <Card key={al.id} className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="text-[11px] font-mono text-slate-500">{al.source}</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-sm text-[#0B132B]">{al.title}</span>
+                  <StatusLabel label={al.tone === 'rose' ? 'Action Urgent' : 'Review'} tone={al.tone} />
+                </div>
+                <p className="text-xs text-slate-600">{al.detail}</p>
+              </div>
+              <Link to={al.to} className="shrink-0">
+                <Button variant="secondary" size="sm">
+                  Open Module →
+                </Button>
+              </Link>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const BillingPage: React.FC = () => {
+  const { organization, catalog, entitlements, employees, members, sites } = useApp();
+  const waitlistedCount = entitlements.filter((e) => e.status === 'waitlisted').length;
+  const activeEntitled = entitlements.filter((e) => e.status === 'active');
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      <PageHeader
+        eyebrow="Platform Subscription & Usage"
+        title="Billing & Entitlements"
+        description="Live organisation entitlements and operational seat usage. Commercial invoicing & M-Pesa billing activate after pilot validation."
+      />
+
+      <div className="grid sm:grid-cols-3 gap-4">
+        <Card className="p-5">
+          <div className="text-xs font-medium text-slate-500">Current Plan</div>
+          <div className="text-lg font-bold text-[#0B132B] mt-1">V1 Pilot Workspace</div>
+          <div className="text-xs font-mono text-[#059669] mt-1">
+            {organization?.currency || 'KES'} 0.00 / month (Pilot)
+          </div>
+        </Card>
+        <Card className="p-5">
+          <div className="text-xs font-medium text-slate-500">Tracked Usage</div>
+          <div className="text-lg font-bold font-mono tabular-nums text-[#0B132B] mt-1">
+            {employees.length} guards · {sites.length} sites
+          </div>
+          <div className="text-xs text-slate-500 mt-1">{members.length} dashboard seat(s)</div>
+        </Card>
+        <Card className="p-5">
+          <div className="text-xs font-medium text-slate-500">Waitlisted Apps</div>
+          <div className="text-lg font-bold font-mono tabular-nums text-[#0B132B] mt-1">{waitlistedCount}</div>
+          <div className="text-xs text-slate-500 mt-1">Upcoming waves tracked</div>
+        </Card>
       </div>
 
-      <Card className="p-6 space-y-2">
-        {question && <div className="text-xs font-semibold text-slate-500">Query · {question}</div>}
-        <p className="text-sm text-slate-800 leading-relaxed">{busy ? 'Querying stored tenant state...' : answer}</p>
+      <Card className="p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold text-base text-[#0B132B] flex items-center gap-2">
+            <CreditCard className="h-4 w-4 text-[#059669]" /> Organisation Module Entitlements
+          </h2>
+          <Link to="/app/discover" className="text-xs font-semibold text-[#059669] hover:underline">
+            Manage in Discover Apps →
+          </Link>
+        </div>
+
+        <div className="divide-y divide-slate-100 text-sm">
+          {activeEntitled.length === 0 ? (
+            <div className="py-3 text-slate-600">FieldForce AI is provisioned on pilot access.</div>
+          ) : (
+            activeEntitled.map((ent) => {
+              const prod = catalog.find((p) => p.id === ent.product_id || p.slug === ent.slug);
+              return (
+                <div key={ent.product_id} className="py-3 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-semibold text-slate-900">{prod?.name || ent.slug}</div>
+                    <div className="text-xs text-slate-500">{prod?.category || 'Business & workforce'}</div>
+                  </div>
+                  <StatusLabel label="Active · Pilot" tone="emerald" />
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <InlineAlert tone="info">
+          Commercial subscriptions, M-Pesa Paybill checkout, and automated KES invoices are scheduled for Wave 2
+          (BiasharaOS / Finance release). No charges are billed during V1 pilot testing.
+        </InlineAlert>
       </Card>
     </div>
   );
@@ -898,6 +1199,7 @@ export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' 
                           onChange={async (e) => {
                             const res = await updateMemberRole(m.id, e.target.value as OrgRole);
                             if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                            else setFeedback({ tone: 'success', msg: `Role updated for ${m.full_name}.` });
                           }}
                           className="border border-slate-300 rounded px-2 py-1 text-xs bg-white min-h-[34px]"
                         >

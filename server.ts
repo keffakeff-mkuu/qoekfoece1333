@@ -822,6 +822,70 @@ app.patch('/api/fieldforce/employees/:id/status', requireAuth, requireOrg, (req,
   res.json({ ok: true });
 });
 
+app.patch('/api/fieldforce/employees/:id', requireAuth, requireOrg, (req, res) => {
+  if (!hasRole(req, ['owner', 'admin', 'operations_manager', 'hr_manager'])) {
+    res.status(403).json({ error: 'Insufficient permissions to edit guard details.' });
+    return;
+  }
+  const schema = z.object({
+    first_name: z.string().trim().min(1).max(80),
+    last_name: z.string().trim().min(1).max(80),
+    phone: z.string().trim().min(6).max(30),
+    user_id: z.string().trim().nullable().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid guard update payload.' });
+    return;
+  }
+
+  const target = db
+    .prepare('SELECT id FROM ff_employees WHERE id = ? AND organization_id = ?')
+    .get(req.params.id, req.auth!.orgId);
+  if (!target) {
+    res.status(404).json({ error: 'Employee not found.' });
+    return;
+  }
+
+  let linkedUserId: string | null = null;
+  if (parsed.data.user_id) {
+    const member = db
+      .prepare("SELECT user_id FROM organization_memberships WHERE organization_id = ? AND user_id = ? AND status = 'active'")
+      .get(req.auth!.orgId, parsed.data.user_id) as { user_id: string } | undefined;
+    if (!member) {
+      res.status(404).json({ error: 'Selected user account is not an active member of this organisation.' });
+      return;
+    }
+    linkedUserId = member.user_id;
+  }
+
+  db.prepare(`
+    UPDATE ff_employees
+    SET first_name = ?, last_name = ?, phone = ?, user_id = ?, updated_at = datetime('now')
+    WHERE id = ? AND organization_id = ?
+  `).run(
+    parsed.data.first_name,
+    parsed.data.last_name,
+    parsed.data.phone,
+    linkedUserId,
+    req.params.id,
+    req.auth!.orgId
+  );
+
+  writeAuditEvent({
+    organizationId: req.auth!.orgId!,
+    actorId: req.auth!.userId,
+    actorName: req.auth!.fullName,
+    action: 'employee.updated',
+    entityType: 'ff_employees',
+    entityId: req.params.id,
+    metadata: { linked_user: Boolean(linkedUserId) },
+  });
+
+  const employee = db.prepare('SELECT * FROM ff_employees WHERE id = ?').get(req.params.id);
+  res.json({ employee });
+});
+
 app.post('/api/fieldforce/clients', requireAuth, requireOrg, (req, res) => {
   if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
     res.status(403).json({ error: 'Only Operations Managers, Admins, or Owners can add clients.' });
@@ -876,6 +940,40 @@ app.post('/api/fieldforce/clients', requireAuth, requireOrg, (req, res) => {
   res.status(201).json({ client: { ...client, is_active: Boolean(client.is_active) } });
 });
 
+app.patch('/api/fieldforce/clients/:id/status', requireAuth, requireOrg, (req, res) => {
+  if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
+    res.status(403).json({ error: 'Insufficient permissions to update client status.' });
+    return;
+  }
+  const schema = z.object({ is_active: z.boolean() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid active boolean is required.' });
+    return;
+  }
+  const existing = db
+    .prepare('SELECT id FROM ff_clients WHERE id = ? AND organization_id = ?')
+    .get(req.params.id, req.auth!.orgId);
+  if (!existing) {
+    res.status(404).json({ error: 'Client not found.' });
+    return;
+  }
+  db.prepare("UPDATE ff_clients SET is_active = ?, updated_at = datetime('now') WHERE id = ?").run(
+    parsed.data.is_active ? 1 : 0,
+    req.params.id
+  );
+  writeAuditEvent({
+    organizationId: req.auth!.orgId!,
+    actorId: req.auth!.userId,
+    actorName: req.auth!.fullName,
+    action: 'client.status_updated',
+    entityType: 'ff_clients',
+    entityId: req.params.id,
+    metadata: { is_active: parsed.data.is_active },
+  });
+  res.json({ ok: true });
+});
+
 app.post('/api/fieldforce/sites', requireAuth, requireOrg, (req, res) => {
   if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
     res.status(403).json({ error: 'Only Operations Managers, Admins, or Owners can add sites.' });
@@ -921,6 +1019,40 @@ app.post('/api/fieldforce/sites', requireAuth, requireOrg, (req, res) => {
   res.status(201).json({ site: { ...site, is_active: Boolean(site.is_active) } });
 });
 
+app.patch('/api/fieldforce/sites/:id/status', requireAuth, requireOrg, (req, res) => {
+  if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
+    res.status(403).json({ error: 'Insufficient permissions to update site status.' });
+    return;
+  }
+  const schema = z.object({ is_active: z.boolean() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid active boolean is required.' });
+    return;
+  }
+  const existing = db
+    .prepare('SELECT id FROM ff_sites WHERE id = ? AND organization_id = ?')
+    .get(req.params.id, req.auth!.orgId);
+  if (!existing) {
+    res.status(404).json({ error: 'Site not found.' });
+    return;
+  }
+  db.prepare("UPDATE ff_sites SET is_active = ?, updated_at = datetime('now') WHERE id = ?").run(
+    parsed.data.is_active ? 1 : 0,
+    req.params.id
+  );
+  writeAuditEvent({
+    organizationId: req.auth!.orgId!,
+    actorId: req.auth!.userId,
+    actorName: req.auth!.fullName,
+    action: 'site.status_updated',
+    entityType: 'ff_sites',
+    entityId: req.params.id,
+    metadata: { is_active: parsed.data.is_active },
+  });
+  res.json({ ok: true });
+});
+
 app.post('/api/fieldforce/posts', requireAuth, requireOrg, (req, res) => {
   if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
     res.status(403).json({ error: 'Only Operations Managers, Admins, or Owners can add posts.' });
@@ -964,6 +1096,48 @@ app.post('/api/fieldforce/posts', requireAuth, requireOrg, (req, res) => {
   res.status(201).json({ post });
 });
 
+app.patch('/api/fieldforce/posts/:id', requireAuth, requireOrg, (req, res) => {
+  if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
+    res.status(403).json({ error: 'Only Operations Managers, Admins, or Owners can edit posts.' });
+    return;
+  }
+  const schema = z.object({
+    name: z.string().trim().min(2).max(120),
+    required_guards: z.number().int().min(1).max(20),
+    instructions: z.string().trim().max(500).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid post name and required guards (1-20) are required.' });
+    return;
+  }
+  const existing = db
+    .prepare('SELECT id FROM ff_posts WHERE id = ? AND organization_id = ?')
+    .get(req.params.id, req.auth!.orgId);
+  if (!existing) {
+    res.status(404).json({ error: 'Post not found.' });
+    return;
+  }
+  db.prepare(`
+    UPDATE ff_posts
+    SET name = ?, required_guards = ?, instructions = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(parsed.data.name, parsed.data.required_guards, parsed.data.instructions ?? '', req.params.id);
+
+  writeAuditEvent({
+    organizationId: req.auth!.orgId!,
+    actorId: req.auth!.userId,
+    actorName: req.auth!.fullName,
+    action: 'post.updated',
+    entityType: 'ff_posts',
+    entityId: req.params.id,
+    metadata: { required_guards: parsed.data.required_guards },
+  });
+
+  const post = db.prepare('SELECT * FROM ff_posts WHERE id = ?').get(req.params.id);
+  res.json({ post });
+});
+
 app.post('/api/fieldforce/site-supervisors', requireAuth, requireOrg, (req, res) => {
   if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
     res.status(403).json({ error: 'Insufficient permissions to assign site supervisors.' });
@@ -975,15 +1149,66 @@ app.post('/api/fieldforce/site-supervisors', requireAuth, requireOrg, (req, res)
     res.status(400).json({ error: 'Site and supervisor user are required.' });
     return;
   }
+
+  const site = db.prepare('SELECT id FROM ff_sites WHERE id = ? AND organization_id = ?').get(parsed.data.site_id, req.auth!.orgId);
+  const member = db
+    .prepare("SELECT user_id FROM organization_memberships WHERE organization_id = ? AND user_id = ? AND status = 'active'")
+    .get(req.auth!.orgId, parsed.data.user_id);
+  if (!site || !member) {
+    res.status(404).json({ error: 'Site or supervisor membership not found in this organisation.' });
+    return;
+  }
+
+  const existing = db
+    .prepare('SELECT id FROM ff_site_supervisors WHERE organization_id = ? AND site_id = ? AND user_id = ?')
+    .get(req.auth!.orgId, parsed.data.site_id, parsed.data.user_id);
+  if (existing) {
+    res.status(409).json({ error: 'Supervisor is already linked to this site.' });
+    return;
+  }
+
   const id = `ss-${crypto.randomUUID().slice(0, 10)}`;
   db.prepare(`
     INSERT INTO ff_site_supervisors (id, organization_id, site_id, user_id)
     VALUES (?, ?, ?, ?)
-    ON CONFLICT(site_id, user_id) DO NOTHING
   `).run(id, req.auth!.orgId, parsed.data.site_id, parsed.data.user_id);
+
+  writeAuditEvent({
+    organizationId: req.auth!.orgId!,
+    actorId: req.auth!.userId,
+    actorName: req.auth!.fullName,
+    action: 'site_supervisor.linked',
+    entityType: 'ff_site_supervisors',
+    entityId: id,
+    metadata: { site_id: parsed.data.site_id, user_id: parsed.data.user_id },
+  });
 
   const siteSupervisors = db.prepare('SELECT * FROM ff_site_supervisors WHERE organization_id = ?').all(req.auth!.orgId);
   res.status(201).json({ siteSupervisors });
+});
+
+app.delete('/api/fieldforce/site-supervisors/:id', requireAuth, requireOrg, (req, res) => {
+  if (!hasRole(req, ['owner', 'admin', 'operations_manager'])) {
+    res.status(403).json({ error: 'Insufficient permissions to unlink site supervisors.' });
+    return;
+  }
+  const existing = db
+    .prepare('SELECT id FROM ff_site_supervisors WHERE id = ? AND organization_id = ?')
+    .get(req.params.id, req.auth!.orgId);
+  if (!existing) {
+    res.status(404).json({ error: 'Site supervisor link not found.' });
+    return;
+  }
+  db.prepare('DELETE FROM ff_site_supervisors WHERE id = ? AND organization_id = ?').run(req.params.id, req.auth!.orgId);
+  writeAuditEvent({
+    organizationId: req.auth!.orgId!,
+    actorId: req.auth!.userId,
+    actorName: req.auth!.fullName,
+    action: 'site_supervisor.unlinked',
+    entityType: 'ff_site_supervisors',
+    entityId: req.params.id,
+  });
+  res.json({ ok: true });
 });
 
 // ==================== SHIFTS, ASSIGNMENTS, ATTENDANCE & INCIDENTS ====================
@@ -1012,6 +1237,13 @@ app.post('/api/fieldforce/shifts', requireAuth, requireOrg, (req, res) => {
     .get(parsed.data.post_id, req.auth!.orgId) as { id: string; site_id: string } | undefined;
   if (!post || post.site_id !== parsed.data.site_id) {
     res.status(404).json({ error: 'Post does not belong to selected site.' });
+    return;
+  }
+
+  const startMs = new Date(parsed.data.start_time).getTime();
+  const endMs = new Date(parsed.data.end_time).getTime();
+  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+    res.status(400).json({ error: 'Shift end time must be after shift start time.' });
     return;
   }
 
@@ -1243,6 +1475,16 @@ app.post('/api/fieldforce/incidents', requireAuth, requireOrg, (req, res) => {
     return;
   }
 
+  if (parsed.data.post_id) {
+    const post = db
+      .prepare('SELECT id FROM ff_posts WHERE id = ? AND site_id = ? AND organization_id = ?')
+      .get(parsed.data.post_id, parsed.data.site_id, req.auth!.orgId);
+    if (!post) {
+      res.status(400).json({ error: 'Selected post does not belong to this site.' });
+      return;
+    }
+  }
+
   const id = `inc-${crypto.randomUUID().slice(0, 12)}`;
   db.prepare(`
     INSERT INTO ff_incidents (id, organization_id, site_id, post_id, reported_by, reported_by_name, occurrence_time, category, severity, narrative, status)
@@ -1367,16 +1609,27 @@ app.post('/api/fieldforce/incidents/:id/ai-draft', requireAuth, requireOrg, asyn
 
   try {
     const ai = getGeminiClient();
-    const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
-      contents: prompt,
-      config: {
-        systemInstruction:
-          'You are a Kenya private security operations report editor. Convert the redacted field notes into a concise, factual, 3-bullet operational incident brief with: (1) Event Summary, (2) Immediate Action Taken, (3) Recommended Supervisor Follow-Up. Do not invent facts or personal names not present in the input.',
-      },
-    });
+    let response: Awaited<ReturnType<typeof ai.models.generateContent>> | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            systemInstruction:
+              'You are a Kenya private security operations report editor. Convert the redacted field notes into a concise, factual, 3-bullet operational incident brief with: (1) Event Summary, (2) Immediate Action Taken, (3) Recommended Supervisor Follow-Up. Do not invent facts or personal names not present in the input.',
+          },
+        });
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTransient = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+        if (!isTransient || attempt === 2) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+      }
+    }
 
-    const draftText = (response.text || '').trim();
+    const draftText = (response?.text || '').trim();
     if (!draftText) {
       res.status(502).json({ error: 'Empty response received from Gemini model.' });
       return;
@@ -1402,8 +1655,16 @@ app.post('/api/fieldforce/incidents/:id/ai-draft', requireAuth, requireOrg, asyn
     const updated = db.prepare('SELECT * FROM ff_incidents WHERE id = ?').get(inc.id);
     res.json({ incident: updated });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to generate AI incident summary draft.';
-    res.status(502).json({ error: message });
+    const rawMsg = err instanceof Error ? err.message : 'Failed to generate AI incident summary draft.';
+    let cleanMsg = rawMsg;
+    try {
+      const parsedErr = JSON.parse(rawMsg);
+      if (parsedErr?.error?.message) cleanMsg = String(parsedErr.error.message);
+    } catch {
+      // keep rawMsg
+    }
+    const isUnavailable = rawMsg.includes('503') || rawMsg.includes('UNAVAILABLE');
+    res.status(isUnavailable ? 503 : 502).json({ error: cleanMsg });
   }
 });
 
@@ -1467,63 +1728,233 @@ app.post('/api/fieldforce/incidents/:id/approve-ai-draft', requireAuth, requireO
   res.json({ incident });
 });
 
-// ==================== DETERMINISTIC SOP ASSISTANT ====================
+// ==================== AI ORCHESTRATOR & SPECIALIST AGENTS ====================
 
 app.post('/api/assistant/query', requireAuth, requireOrg, (req, res) => {
-  const topic = String(req.body?.topic || 'unassigned');
+  const topic = String(req.body?.topic || '').trim();
+  const question = String(req.body?.question || '').trim();
+  const queryText = (question || topic || 'unassigned').toLowerCase();
+
   const orgId = req.auth!.orgId!;
+  const role = req.auth!.role!;
+  const userId = req.auth!.userId;
 
-  if (topic === 'unassigned') {
-    const shifts = db.prepare("SELECT id, post_id FROM ff_shifts WHERE organization_id = ? AND status != 'cancelled'").all(orgId) as Array<{
-      id: string;
-      post_id: string;
-    }>;
-    const posts = db.prepare('SELECT id, required_guards, name FROM ff_posts WHERE organization_id = ?').all(orgId) as Array<{
-      id: string;
-      required_guards: number;
-      name: string;
-    }>;
-    const assignments = db
-      .prepare("SELECT shift_id FROM ff_assignments WHERE organization_id = ? AND status != 'cancelled'")
-      .all(orgId) as Array<{ shift_id: string }>;
+  const activeSlugs = new Set(
+    (
+      db
+        .prepare(`
+          SELECT p.slug
+          FROM organization_app_entitlements e
+          JOIN product_catalog p ON p.id = e.product_id
+          WHERE e.organization_id = ? AND e.status = 'active'
+        `)
+        .all(orgId) as Array<{ slug: string }>
+    ).map((r) => r.slug)
+  );
 
-    const understaffed = shifts.filter((sh) => {
-      const post = posts.find((p) => p.id === sh.post_id);
-      const assignedCount = assignments.filter((a) => a.shift_id === sh.id).length;
-      return assignedCount < (post?.required_guards ?? 1);
-    });
-
+  // Route 1: BiasharaOS queries (profit, revenue, cashflow, invoices, m-pesa, expense) -> Gated Coming Soon
+  if (
+    queryText.includes('profit') ||
+    queryText.includes('revenue') ||
+    queryText.includes('biashara') ||
+    queryText.includes('m-pesa') ||
+    queryText.includes('mpesa') ||
+    queryText.includes('invoice')
+  ) {
+    const isActive = activeSlugs.has('biashara-os');
     res.json({
-      topic,
-      answer: `Deterministic SQLite Check: ${understaffed.length} published shift(s) are currently below required post staffing. Open FieldForce -> Schedule to assign active guards with overlap protection.`,
-    });
-    return;
-  }
-
-  if (topic === 'incidents') {
-    const row = db
-      .prepare("SELECT COUNT(*) as cnt FROM ff_incidents WHERE organization_id = ? AND status IN ('open', 'under_investigation')")
-      .get(orgId) as { cnt: number };
-    res.json({
-      topic,
-      answer: `Deterministic SQLite Check: ${row.cnt} incident(s) require supervisor triage or resolution. Use FieldForce -> Incidents to inspect narratives, generate an AI Draft (Pending Human Approval), and record your official supervisor sign-off.`,
-    });
-    return;
-  }
-
-  if (topic === 'privacy') {
-    res.json({
-      topic,
+      topic: topic || 'biashara',
+      orchestrator: {
+        routedTo: 'Biashara Agent',
+        productSlug: 'biashara-os',
+        agentStatus: isActive ? 'active' : 'coming_soon',
+        gateReason: 'BiasharaOS (Wave 2) is Planned Next and not yet active for live ledger queries.',
+      },
       answer:
-        'Kenya DPA 2019 & PSRA V1 Policy: National ID scans, biometric templates, police clearance PDFs, and continuous background GPS tracking are excluded in V1. Location snapshots are captured strictly upon explicit Clock-In / Clock-Out action, and PII is redacted before any server-side AI incident drafting.',
+        'Routed to Biashara Agent (Coming Soon — Wave 2): BiasharaOS is not activated on your organisation yet, so profit, invoice, and M-Pesa figures cannot be reported or invented. You can join the BiasharaOS roadmap waitlist under Discover Apps.',
     });
     return;
   }
+
+  // Route 2: TradePilot queries (tender, bid, supply contract) -> Gated Coming Soon
+  if (queryText.includes('tender') || queryText.includes('tradepilot') || queryText.includes('contract')) {
+    res.json({
+      topic: topic || 'tradepilot',
+      orchestrator: {
+        routedTo: 'TradePilot Agent',
+        productSlug: 'tradepilot-ai',
+        agentStatus: 'coming_soon',
+        gateReason: 'TradePilot AI (Wave 5) is currently Planned and not yet active.',
+      },
+      answer:
+        'Routed to TradePilot Agent (Coming Soon — Wave 5): TradePilot AI is on the AI Africa roadmap and not yet active for tender discovery. Visit Discover Apps to waitlist your organisation.',
+    });
+    return;
+  }
+
+  // Route 3: FieldForce Agent (Active V1) — enforce RBAC scoping!
+  if (topic === 'privacy' || queryText.includes('dpa') || queryText.includes('privacy') || queryText.includes('psra')) {
+    res.json({
+      topic: topic || 'privacy',
+      orchestrator: {
+        routedTo: 'FieldForce Compliance Policy',
+        productSlug: 'fieldforce',
+        agentStatus: 'active',
+      },
+      answer:
+        'Routed to FieldForce Agent (Active V1): Per Kenya DPA 2019 & PSRA V1 policy, National ID scans, biometric templates, police clearance PDFs, and continuous background GPS tracking are disabled. Location snapshots record strictly on explicit Clock-In / Clock-Out action, and PII is redacted server-side before AI incident drafting.',
+    });
+    return;
+  }
+
+  if (topic === 'override' || queryText.includes('override') || queryText.includes('attendance')) {
+    const attCount =
+      role === 'guard'
+        ? (
+            db
+              .prepare(`
+                SELECT COUNT(*) as cnt
+                FROM ff_attendance_events a
+                JOIN ff_employees e ON e.id = a.employee_id
+                WHERE a.organization_id = ? AND e.user_id = ?
+              `)
+              .get(orgId, userId) as { cnt: number }
+          ).cnt
+        : (
+            db
+              .prepare('SELECT COUNT(*) as cnt FROM ff_attendance_events WHERE organization_id = ?')
+              .get(orgId) as { cnt: number }
+          ).cnt;
+
+    const overrides =
+      role === 'guard'
+        ? 0
+        : (
+            db
+              .prepare("SELECT COUNT(*) as cnt FROM ff_attendance_events WHERE organization_id = ? AND event_type = 'supervisor_override'")
+              .get(orgId) as { cnt: number }
+          ).cnt;
+
+    res.json({
+      topic: topic || 'override',
+      orchestrator: {
+        routedTo: 'FieldForce Agent',
+        productSlug: 'fieldforce',
+        agentStatus: 'active',
+      },
+      answer: `Routed to FieldForce Agent (Active V1): Your authorised scope holds ${attCount} immutable attendance event(s)${role === 'guard' ? '' : ` including ${overrides} supervisor override(s)`}. SQLite triggers forbid UPDATE/DELETE on ff_attendance_events; every supervisor override requires a documented audit reason (min 5 characters).`,
+    });
+    return;
+  }
+
+  if (topic === 'incidents' || queryText.includes('incident') || queryText.includes('breach') || queryText.includes('trespass')) {
+    const row =
+      role === 'guard'
+        ? (db
+            .prepare("SELECT COUNT(*) as cnt FROM ff_incidents WHERE organization_id = ? AND reported_by = ? AND status IN ('open', 'under_investigation')")
+            .get(orgId, userId) as { cnt: number })
+        : (db
+            .prepare("SELECT COUNT(*) as cnt FROM ff_incidents WHERE organization_id = ? AND status IN ('open', 'under_investigation')")
+            .get(orgId) as { cnt: number });
+
+    const pendingAi =
+      role === 'guard'
+        ? 0
+        : (
+            db
+              .prepare('SELECT COUNT(*) as cnt FROM ff_incidents WHERE organization_id = ? AND ai_draft_summary IS NOT NULL AND ai_approved_at IS NULL')
+              .get(orgId) as { cnt: number }
+          ).cnt;
+
+    res.json({
+      topic: topic || 'incidents',
+      orchestrator: {
+        routedTo: 'FieldForce Agent',
+        productSlug: 'fieldforce',
+        agentStatus: 'active',
+      },
+      answer: `Routed to FieldForce Agent (Active V1): ${row.cnt} incident(s) in your authorised queue are open or under investigation${pendingAi > 0 ? `, with ${pendingAi} AI summary draft(s) awaiting supervisor approval` : ''}. Open FieldForce -> Incidents to triage or approve drafts.`,
+    });
+    return;
+  }
+
+  if (
+    queryText.includes('deploy') ||
+    queryText.includes('guard') ||
+    queryText.includes('payroll') ||
+    queryText.includes('how many')
+  ) {
+    if (role === 'guard') {
+      const myAssigned = db
+        .prepare(`
+          SELECT COUNT(*) as cnt
+          FROM ff_assignments a
+          JOIN ff_employees e ON e.id = a.employee_id
+          WHERE a.organization_id = ? AND e.user_id = ? AND a.status != 'cancelled'
+        `)
+        .get(orgId, userId) as { cnt: number };
+
+      res.json({
+        topic: 'deployment',
+        orchestrator: {
+          routedTo: 'FieldForce Agent (Guard Scope)',
+          productSlug: 'fieldforce',
+          agentStatus: 'active',
+        },
+        answer: `Routed to FieldForce Agent (Guard-Scoped): You currently have ${myAssigned.cnt} active shift assignment(s). Organisation-wide guard counts and payroll runs are restricted to management roles.`,
+      });
+      return;
+    }
+
+    const activeGuards = (
+      db.prepare("SELECT COUNT(*) as cnt FROM ff_employees WHERE organization_id = ? AND status = 'active'").get(orgId) as { cnt: number }
+    ).cnt;
+    const assignedShifts = (
+      db.prepare("SELECT COUNT(DISTINCT employee_id) as cnt FROM ff_assignments WHERE organization_id = ? AND status != 'cancelled'").get(orgId) as { cnt: number }
+    ).cnt;
+    const payrollNote = queryText.includes('payroll')
+      ? ' Note: Automated KES Payroll calculation (Module 06) is an Upcoming module and has not been enabled yet, so no payroll totals are fabricated.'
+      : '';
+
+    res.json({
+      topic: 'deployment',
+      orchestrator: {
+        routedTo: 'FieldForce Agent',
+        productSlug: 'fieldforce',
+        agentStatus: 'active',
+      },
+      answer: `Routed to FieldForce Agent (Active V1): Your organisation currently has ${activeGuards} active guard(s) in the directory and ${assignedShifts} guard(s) assigned to scheduled shifts.${payrollNote}`,
+    });
+    return;
+  }
+
+  // Default: Unassigned / understaffed shifts check (RBAC scoped)
+  const shifts = db.prepare("SELECT id, post_id FROM ff_shifts WHERE organization_id = ? AND status != 'cancelled'").all(orgId) as Array<{
+    id: string;
+    post_id: string;
+  }>;
+  const posts = db.prepare('SELECT id, required_guards FROM ff_posts WHERE organization_id = ?').all(orgId) as Array<{
+    id: string;
+    required_guards: number;
+  }>;
+  const assignments = db
+    .prepare("SELECT shift_id FROM ff_assignments WHERE organization_id = ? AND status != 'cancelled'")
+    .all(orgId) as Array<{ shift_id: string }>;
+
+  const understaffed = shifts.filter((sh) => {
+    const post = posts.find((p) => p.id === sh.post_id);
+    const assignedCount = assignments.filter((a) => a.shift_id === sh.id).length;
+    return assignedCount < (post?.required_guards ?? 1);
+  });
 
   res.json({
-    topic,
-    answer:
-      'Attendance Ledger SOP: All clock_in, clock_out, and supervisor_override records are enforced append-only at the database level. Every supervisor_override requires a documented audit reason of at least 5 characters.',
+    topic: topic || 'unassigned',
+    orchestrator: {
+      routedTo: 'FieldForce Agent',
+      productSlug: 'fieldforce',
+      agentStatus: 'active',
+    },
+    answer: `Routed to FieldForce Agent (Active V1): ${understaffed.length} published shift(s) are currently below required post staffing (${shifts.length} total published shifts). Open FieldForce -> Shifts to assign active guards with overlap protection.`,
   });
 });
 

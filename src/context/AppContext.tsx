@@ -62,6 +62,10 @@ interface AppContextValue {
     hire_date: string;
   }) => Promise<{ error?: string }>;
   updateEmployeeStatus: (id: string, status: Employee['status']) => Promise<{ error?: string }>;
+  updateEmployee: (
+    id: string,
+    input: { first_name: string; last_name: string; phone: string; user_id?: string | null }
+  ) => Promise<{ error?: string }>;
   addClient: (input: {
     client_code: string;
     company_name: string;
@@ -69,19 +73,26 @@ interface AppContextValue {
     contact_phone: string;
     contact_email?: string;
   }) => Promise<{ error?: string }>;
+  toggleClientStatus: (id: string, is_active: boolean) => Promise<{ error?: string }>;
   addSite: (input: {
     client_id: string;
     name: string;
     location_description?: string;
     city: string;
   }) => Promise<{ error?: string }>;
+  toggleSiteStatus: (id: string, is_active: boolean) => Promise<{ error?: string }>;
   addPost: (input: {
     site_id: string;
     name: string;
     required_guards: number;
     instructions?: string;
   }) => Promise<{ error?: string }>;
+  updatePost: (
+    id: string,
+    input: { name: string; required_guards: number; instructions?: string }
+  ) => Promise<{ error?: string }>;
   assignSiteSupervisor: (siteId: string, userId: string) => Promise<{ error?: string }>;
+  removeSiteSupervisor: (id: string) => Promise<{ error?: string }>;
   addShift: (input: {
     site_id: string;
     post_id: string;
@@ -110,7 +121,14 @@ interface AppContextValue {
   reviewIncident: (id: string, status: IncidentStatus, reviewNotes?: string) => Promise<{ error?: string }>;
   generateIncidentAIDraft: (id: string) => Promise<{ error?: string }>;
   approveIncidentAIDraft: (id: string, approvedSummary: string, nextStatus?: IncidentStatus) => Promise<{ error?: string }>;
-  querySOPAssistant: (topic: string) => Promise<{ answer?: string; error?: string }>;
+  querySOPAssistant: (
+    topicOrQuestion: string,
+    isFreeText?: boolean
+  ) => Promise<{
+    answer?: string;
+    orchestrator?: { routedTo: string; productSlug: string; agentStatus: 'active' | 'coming_soon'; gateReason?: string };
+    error?: string;
+  }>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -281,6 +299,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setClients([]);
     setSites([]);
     setPosts([]);
+    setSiteSupervisors([]);
+    setEntitlements([]);
     setShifts([]);
     setAssignments([]);
     setAttendance([]);
@@ -369,6 +389,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return {};
   };
 
+  const updateEmployee = async (
+    id: string,
+    input: { first_name: string; last_name: string; phone: string; user_id?: string | null }
+  ) => {
+    const res = await apiRequest(`/api/fieldforce/employees/${id}`, { method: 'PATCH', body: input });
+    if (res.error) return { error: res.error };
+    await refreshWorkspace();
+    return {};
+  };
+
   const addClient = async (input: {
     client_code: string;
     company_name: string;
@@ -377,6 +407,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     contact_email?: string;
   }) => {
     const res = await apiRequest('/api/fieldforce/clients', { method: 'POST', body: input });
+    if (res.error) return { error: res.error };
+    await refreshWorkspace();
+    return {};
+  };
+
+  const toggleClientStatus = async (id: string, is_active: boolean) => {
+    const res = await apiRequest(`/api/fieldforce/clients/${id}/status`, { method: 'PATCH', body: { is_active } });
     if (res.error) return { error: res.error };
     await refreshWorkspace();
     return {};
@@ -394,6 +431,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return {};
   };
 
+  const toggleSiteStatus = async (id: string, is_active: boolean) => {
+    const res = await apiRequest(`/api/fieldforce/sites/${id}/status`, { method: 'PATCH', body: { is_active } });
+    if (res.error) return { error: res.error };
+    await refreshWorkspace();
+    return {};
+  };
+
   const addPost = async (input: {
     site_id: string;
     name: string;
@@ -406,11 +450,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return {};
   };
 
+  const updatePost = async (id: string, input: { name: string; required_guards: number; instructions?: string }) => {
+    const res = await apiRequest(`/api/fieldforce/posts/${id}`, { method: 'PATCH', body: input });
+    if (res.error) return { error: res.error };
+    await refreshWorkspace();
+    return {};
+  };
+
   const assignSiteSupervisor = async (siteId: string, userId: string) => {
     const res = await apiRequest('/api/fieldforce/site-supervisors', {
       method: 'POST',
       body: { site_id: siteId, user_id: userId },
     });
+    if (res.error) return { error: res.error };
+    await refreshWorkspace();
+    return {};
+  };
+
+  const removeSiteSupervisor = async (id: string) => {
+    const res = await apiRequest(`/api/fieldforce/site-supervisors/${id}`, { method: 'DELETE' });
     if (res.error) return { error: res.error };
     await refreshWorkspace();
     return {};
@@ -501,10 +559,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return {};
   };
 
-  const querySOPAssistant = async (topic: string) => {
-    const res = await apiRequest<{ answer: string }>('/api/assistant/query', { method: 'POST', body: { topic } });
+  const querySOPAssistant = async (topicOrQuestion: string, isFreeText = false) => {
+    const body = isFreeText ? { question: topicOrQuestion } : { topic: topicOrQuestion };
+    const res = await apiRequest<{
+      answer: string;
+      orchestrator?: { routedTo: string; productSlug: string; agentStatus: 'active' | 'coming_soon'; gateReason?: string };
+    }>('/api/assistant/query', { method: 'POST', body });
     if (res.error || !res.data) return { error: res.error };
-    return { answer: res.data.answer };
+    return { answer: res.data.answer, orchestrator: res.data.orchestrator };
   };
 
   return (
@@ -542,10 +604,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toggleWaitlist,
         addEmployee,
         updateEmployeeStatus,
+        updateEmployee,
         addClient,
+        toggleClientStatus,
         addSite,
+        toggleSiteStatus,
         addPost,
+        updatePost,
         assignSiteSupervisor,
+        removeSiteSupervisor,
         addShift,
         assignGuard,
         removeAssignment,
