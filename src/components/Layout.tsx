@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
+  Activity,
   AlertTriangle,
   BarChart3,
   Bell,
@@ -45,6 +46,9 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   upcoming?: boolean;
   matchExact?: boolean;
+  adminOnly?: boolean;
+  clientAllowed?: boolean;
+  hideForClient?: boolean;
 }
 
 interface NavGroup {
@@ -58,67 +62,60 @@ const NAV_GROUPS: NavGroup[] = [
     id: 'overview',
     title: 'PLATFORM CORE',
     items: [
-      { label: 'Home', to: '/app/home', icon: Home, matchExact: true },
-      { label: 'My AI Apps', to: '/app/my-apps', icon: LayoutGrid },
-      { label: 'Discover Apps', to: '/app/discover', icon: Compass },
-      { label: 'FieldForce Command', to: '/app/fieldforce/dashboard', icon: Shield },
-      { label: 'Notifications', to: '/app/notifications', icon: Bell },
+      { label: 'Home', to: '/app/home', icon: Home, matchExact: true, clientAllowed: true },
+      { label: 'My AI Apps', to: '/app/my-apps', icon: LayoutGrid, hideForClient: true },
+      { label: 'Discover Apps', to: '/app/discover', icon: Compass, hideForClient: true },
+      { label: 'FieldForce Command', to: '/app/fieldforce/dashboard', icon: Shield, hideForClient: true },
+      { label: 'Client Portal', to: '/app/fieldforce/client-portal', icon: Building2, clientAllowed: true },
+      { label: 'Notifications', to: '/app/notifications', icon: Bell, hideForClient: true },
     ],
   },
   {
     id: 'workforce',
     title: 'WORKFORCE',
     items: [
-      { label: 'Employees', to: '/app/fieldforce/employees', icon: Users },
-      { label: 'Documents', to: '/app/upcoming/documents', icon: FileCheck2, upcoming: true },
-      { label: 'Training', to: '/app/upcoming/training', icon: GraduationCap, upcoming: true },
+      { label: 'Employees', to: '/app/fieldforce/employees', icon: Users, matchExact: true },
+      { label: 'Documents & Expiry', to: '/app/fieldforce/employees?tab=documents', icon: FileCheck2 },
+      { label: 'Qualifications', to: '/app/fieldforce/employees?tab=qualifications', icon: GraduationCap },
+      { label: 'Leave & Discipline', to: '/app/fieldforce/employees?tab=leave', icon: Briefcase },
     ],
   },
   {
     id: 'operations',
-    title: 'OPERATIONS',
+    title: 'OPERATIONS & SCHEDULING',
     items: [
       { label: 'Clients', to: '/app/fieldforce/clients', icon: Building2 },
-      { label: 'Sites', to: '/app/fieldforce/sites', icon: MapPin, matchExact: true },
-      { label: 'Posts', to: '/app/fieldforce/sites?view=posts', icon: ShieldCheck },
-      { label: 'Deployment', to: '/app/upcoming/deployment', icon: Briefcase, upcoming: true },
-    ],
-  },
-  {
-    id: 'scheduling',
-    title: 'SCHEDULING',
-    items: [
-      { label: 'Shifts', to: '/app/fieldforce/schedule', icon: CalendarClock, matchExact: true },
+      { label: 'Sites & Geofences', to: '/app/fieldforce/sites', icon: MapPin, matchExact: true },
+      { label: 'Guard Posts', to: '/app/fieldforce/sites?view=posts', icon: ShieldCheck },
+      { label: 'Shifts & Coverage', to: '/app/fieldforce/schedule', icon: CalendarClock, matchExact: true },
       { label: 'Rosters', to: '/app/fieldforce/schedule?view=roster', icon: LayoutGrid },
-      { label: 'Attendance', to: '/app/fieldforce/attendance', icon: ClipboardCheck },
+      { label: 'Attendance & GPS', to: '/app/fieldforce/attendance', icon: ClipboardCheck },
     ],
   },
   {
     id: 'security',
-    title: 'SECURITY',
+    title: 'PATROLS & SECURITY',
     items: [
-      { label: 'Patrols', to: '/app/upcoming/patrols', icon: Route, upcoming: true },
-      { label: 'Incidents', to: '/app/fieldforce/incidents', icon: AlertTriangle },
-      { label: 'Occurrence Book', to: '/app/upcoming/occurrence-book', icon: BookOpen, upcoming: true },
+      { label: 'Patrols & QR Tags', to: '/app/fieldforce/patrols', icon: Route },
+      { label: 'Incidents', to: '/app/fieldforce/incidents', icon: AlertTriangle, matchExact: true },
+      { label: 'Occurrence Book', to: '/app/fieldforce/incidents?view=ob', icon: BookOpen },
     ],
   },
   {
     id: 'finance',
-    title: 'FINANCE',
+    title: 'PAYROLL & FINANCE',
     items: [
-      { label: 'Timesheets', to: '/app/upcoming/timesheets', icon: Timer, upcoming: true },
-      { label: 'Payroll', to: '/app/upcoming/payroll', icon: CreditCard, upcoming: true },
-      { label: 'Invoices', to: '/app/upcoming/invoices', icon: FileText, upcoming: true },
-      { label: 'Receipts', to: '/app/upcoming/receipts', icon: Receipt, upcoming: true },
+      { label: 'Payroll & Payslips', to: '/app/fieldforce/payroll', icon: Timer },
+      { label: 'Finance & Billing', to: '/app/fieldforce/finance', icon: Receipt },
     ],
   },
   {
     id: 'intelligence',
     title: 'INTELLIGENCE',
     items: [
+      { label: 'FieldForce AI Intel', to: '/app/fieldforce/intelligence', icon: BarChart3 },
       { label: 'AI Assistant', to: '/app/ai-assistant', icon: Bot },
-      { label: 'Reports', to: '/app/reports', icon: FileBarChart2 },
-      { label: 'Analytics', to: '/app/upcoming/analytics', icon: BarChart3, upcoming: true },
+      { label: 'Reports & CSV', to: '/app/reports', icon: FileBarChart2 },
     ],
   },
   {
@@ -129,6 +126,7 @@ const NAV_GROUPS: NavGroup[] = [
       { label: 'Team', to: '/app/settings/members', icon: Users, matchExact: true },
       { label: 'Roles', to: '/app/settings/members?view=roles', icon: UserCheck },
       { label: 'Audit Logs', to: '/app/settings/audit-log', icon: Shield },
+      { label: 'Diagnostics', to: '/app/settings/diagnostics', icon: Activity, adminOnly: true },
       { label: 'Settings', to: '/app/settings/organisation', icon: Settings },
     ],
   },
@@ -141,17 +139,23 @@ const ROUTE_TITLES: Record<string, string> = {
   '/app/notifications': 'Platform Notifications',
   '/app/billing': 'Billing & Subscriptions',
   '/app/fieldforce/dashboard': 'FieldForce Command Centre',
-  '/app/fieldforce/employees': 'Workforce · Employees',
+  '/app/fieldforce/employees': 'Workforce · Employees, Contracts & Compliance',
   '/app/fieldforce/clients': 'Operations · Clients',
-  '/app/fieldforce/sites': 'Operations · Sites & Posts',
-  '/app/fieldforce/schedule': 'Scheduling · Shifts & Rosters',
-  '/app/fieldforce/attendance': 'Scheduling · Attendance',
-  '/app/fieldforce/incidents': 'Security · Incident Workspace',
+  '/app/fieldforce/sites': 'Operations · Sites, Geofences & Posts',
+  '/app/fieldforce/schedule': 'Scheduling · Shifts, Relief & Coverage',
+  '/app/fieldforce/attendance': 'Scheduling · Attendance & Verification',
+  '/app/fieldforce/patrols': 'Security · QR Patrols & Checkpoints',
+  '/app/fieldforce/incidents': 'Security · Incidents & Occurrence Book',
+  '/app/fieldforce/payroll': 'Finance · Guard Payroll & Payslips (KES)',
+  '/app/fieldforce/finance': 'Finance · Client Contracts, Invoices & Expenses',
+  '/app/fieldforce/client-portal': 'Client Service Portal',
+  '/app/fieldforce/intelligence': 'Intelligence · FieldForce AI Briefings',
   '/app/ai-assistant': 'AI Africa Main Assistant',
   '/app/reports': 'Combined Reports & CSV',
   '/app/settings/organisation': 'Settings · Organisation',
   '/app/settings/members': 'Settings · Team & Roles',
   '/app/settings/audit-log': 'Settings · Audit Logs',
+  '/app/settings/diagnostics': 'Settings · System Diagnostics',
   '/app/profile': 'Account Profile',
 };
 
@@ -160,9 +164,7 @@ export const AppLayout: React.FC = () => {
     useApp();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({
-    finance: true,
-  });
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -260,6 +262,12 @@ export const AppLayout: React.FC = () => {
 
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-4">
         {NAV_GROUPS.map((group) => {
+          const visibleItems = group.items.filter((item) => {
+            if (currentRole === 'client') return Boolean(item.clientAllowed);
+            if (item.adminOnly && currentRole !== 'owner' && currentRole !== 'admin') return false;
+            return true;
+          });
+          if (visibleItems.length === 0) return null;
           const isCollapsed = Boolean(collapsedGroups[group.id]);
           return (
             <div key={group.id}>
@@ -274,9 +282,9 @@ export const AppLayout: React.FC = () => {
 
               {!isCollapsed && (
                 <div className="mt-1 space-y-0.5">
-                  {group.items.map((item) => {
-                    const Icon = item.icon;
-                    const active = isLinkActive(item);
+                  {visibleItems.map((item) => {
+                      const Icon = item.icon;
+                      const active = isLinkActive(item);
                     return (
                       <Link
                         key={item.to}
@@ -396,8 +404,10 @@ export const AppLayout: React.FC = () => {
                 <option value="owner">Owner</option>
                 <option value="operations_manager">Operations Manager</option>
                 <option value="hr_manager">HR Manager</option>
+                <option value="finance_manager">Finance Manager</option>
                 <option value="supervisor">Field Supervisor</option>
                 <option value="guard">Security Guard</option>
+                <option value="client">Client Portal</option>
               </select>
             </div>
           </div>

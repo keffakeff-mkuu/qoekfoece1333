@@ -31,6 +31,13 @@ import {
   FFSchedulePage,
   FFSitesPage,
 } from './pages/FieldForcePages';
+import {
+  FFClientPortalPage,
+  FFFinancePage,
+  FFIntelligencePage,
+  FFPatrolsPage,
+  FFPayrollPage,
+} from './pages/FieldForceModulesPages';
 
 const ProtectedShell: React.FC = () => {
   const { user, organization } = useApp();
@@ -63,7 +70,12 @@ export default function App() {
             <Route path="fieldforce/sites" element={<FFSitesPage />} />
             <Route path="fieldforce/schedule" element={<FFSchedulePage />} />
             <Route path="fieldforce/attendance" element={<FFAttendancePage />} />
+            <Route path="fieldforce/patrols" element={<FFPatrolsPage />} />
             <Route path="fieldforce/incidents" element={<FFIncidentsPage />} />
+            <Route path="fieldforce/payroll" element={<FFPayrollPage />} />
+            <Route path="fieldforce/finance" element={<FFFinancePage />} />
+            <Route path="fieldforce/client-portal" element={<FFClientPortalPage />} />
+            <Route path="fieldforce/intelligence" element={<FFIntelligencePage />} />
 
             <Route path="ai-assistant" element={<AIAssistantPage />} />
             <Route path="reports" element={<ReportsPage />} />
@@ -72,6 +84,7 @@ export default function App() {
             <Route path="settings/organisation" element={<SettingsPage tab="organisation" />} />
             <Route path="settings/members" element={<SettingsPage tab="members" />} />
             <Route path="settings/audit-log" element={<SettingsPage tab="audit" />} />
+            <Route path="settings/diagnostics" element={<SettingsPage tab="diagnostics" />} />
             <Route path="profile" element={<ProfilePage />} />
             <Route path="upcoming/:slug" element={<UpcomingModulePage />} />
           </Route>

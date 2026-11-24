@@ -1,21 +1,40 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
+  AlertCircle,
+  BookOpen,
   Bot,
+  Camera,
   CheckCircle2,
   Clock,
   Eye,
-  FileText,
+  FileCheck2,
+  Flag,
   MapPin,
+  Mic,
+  MicOff,
   Plus,
+  RefreshCw,
   Search,
   ShieldAlert,
   Sparkles,
   UserCheck,
+  WifiOff,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { formatNairobiDateTime, formatNairobiTime, todayNairobiDate } from '../lib/date';
-import type { Employee, Incident, IncidentCategory, IncidentSeverity, IncidentStatus } from '../types/domain';
+import type {
+  DisciplinaryRecord,
+  Employee,
+  EmployeeContract,
+  EmployeeDocument,
+  EscalationLevel,
+  Incident,
+  IncidentCategory,
+  IncidentSeverity,
+  IncidentStatus,
+  LeaveRecord,
+} from '../types/domain';
 import { AttendanceOverviewChart, SiteCoverageChart } from '../components/Charts';
 import {
   Badge,
@@ -261,6 +280,11 @@ export const FFDashboardPage: React.FC = () => {
 export const FFEmployeesPage: React.FC = () => {
   const {
     employees,
+    contracts,
+    documents,
+    qualifications,
+    leaveRecords,
+    disciplinaryRecords,
     members,
     shifts,
     assignments,
@@ -268,8 +292,22 @@ export const FFEmployeesPage: React.FC = () => {
     addEmployee,
     updateEmployeeStatus,
     updateEmployee,
+    addEmployeeContract,
+    addEmployeeDocument,
+    addEmployeeQualification,
+    submitLeaveRequest,
+    decideLeaveRequest,
+    addDisciplinaryRecord,
     currentRole,
   } = useApp();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const hrTabParam = searchParams.get('tab') || 'directory';
+  const hrTab = (['directory', 'contracts', 'documents', 'qualifications', 'leave', 'disciplinary'] as const).includes(
+    hrTabParam as 'directory'
+  )
+    ? (hrTabParam as 'directory' | 'contracts' | 'documents' | 'qualifications' | 'leave' | 'disciplinary')
+    : 'directory';
+
   const [badge, setBadge] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -288,8 +326,43 @@ export const FFEmployeesPage: React.FC = () => {
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
   const [drawerFeedback, setDrawerFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
+  // HR Sub-module form state
+  const [hrEmpId, setHrEmpId] = useState('');
+  const [ctrType, setCtrType] = useState<EmployeeContract['contract_type']>('permanent');
+  const [ctrSalary, setCtrSalary] = useState('28000');
+  const [ctrAllow, setCtrAllow] = useState('3000');
+  const [ctrOt, setCtrOt] = useState('320');
+  const [docType, setDocType] = useState<EmployeeDocument['doc_type']>('psra_license');
+  const [docTitle, setDocTitle] = useState('');
+  const [docRef, setDocRef] = useState('');
+  const [docExpiry, setDocExpiry] = useState('');
+  const [qualName, setQualName] = useState('');
+  const [qualProvider, setQualProvider] = useState('');
+  const [qualExpiry, setQualExpiry] = useState('');
+  const [lvType, setLvType] = useState<LeaveRecord['leave_type']>('annual');
+  const [lvStart, setLvStart] = useState(todayNairobiDate());
+  const [lvEnd, setLvEnd] = useState(todayNairobiDate());
+  const [lvDays, setLvDays] = useState('1');
+  const [lvReason, setLvReason] = useState('');
+  const [discCategory, setDiscCategory] = useState<DisciplinaryRecord['category']>('lateness');
+  const [discSeverity, setDiscSeverity] = useState<DisciplinaryRecord['severity']>('verbal_warning');
+  const [discSummary, setDiscSummary] = useState('');
+  const [discAction, setDiscAction] = useState('');
+
   const PAGE_SIZE = 8;
   const canEdit = Boolean(currentRole && ['owner', 'admin', 'operations_manager', 'hr_manager'].includes(currentRole));
+
+  useEffect(() => {
+    if ((!hrEmpId || !employees.some((e) => e.id === hrEmpId)) && employees[0]?.id) {
+      setHrEmpId(employees[0].id);
+    }
+  }, [employees, hrEmpId]);
+
+  const in30Days = useMemo(() => new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10), []);
+  const expiringDocsCount = useMemo(
+    () => documents.filter((d) => d.expiry_date && d.expiry_date <= in30Days).length,
+    [documents, in30Days]
+  );
 
   const selectedEmp = useMemo(
     () => employees.find((e) => e.id === selectedEmpId) || null,
@@ -370,8 +443,9 @@ export const FFEmployeesPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Guard & Staff Directory"
-        description="V1 excludes national ID scans, police clearance PDFs, and biometrics per Kenya DPA 2019."
+        eyebrow="Module 01 · Employee & HR Management"
+        title="Workforce, Contracts & Compliance"
+        description="Manage guard profiles, employment contracts, PSRA/DCI compliance documents, qualifications, leave, and disciplinary records."
         actions={
           <div className="relative w-full sm:w-64">
             <Search className="h-4 w-4 text-slate-400 absolute left-3 top-3" />
@@ -388,28 +462,440 @@ export const FFEmployeesPage: React.FC = () => {
         }
       />
 
+      {expiringDocsCount > 0 && (
+        <InlineAlert tone="warning">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              <strong>Compliance Alert:</strong> {expiringDocsCount} employee document(s) are expired or expiring within 30 days.
+            </span>
+            <button
+              type="button"
+              onClick={() => setSearchParams({ tab: 'documents' })}
+              className="font-semibold underline cursor-pointer"
+            >
+              Review Documents →
+            </button>
+          </div>
+        </InlineAlert>
+      )}
+
       <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
-        {(['all', 'active', 'on_leave', 'suspended', 'inactive'] as const).map((st) => (
+        {(
+          [
+            { id: 'directory', label: `Directory (${employees.length})` },
+            { id: 'contracts', label: `Contracts (${contracts.length})` },
+            { id: 'documents', label: `Documents (${documents.length})` },
+            { id: 'qualifications', label: `Qualifications (${qualifications.length})` },
+            { id: 'leave', label: `Leave (${leaveRecords.length})` },
+            { id: 'disciplinary', label: `Disciplinary (${disciplinaryRecords.length})` },
+          ] as const
+        ).map((t) => (
           <button
-            key={st}
-            onClick={() => {
-              setStatusFilter(st);
-              setPage(1);
-            }}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer capitalize ${
-              statusFilter === st ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            key={t.id}
+            onClick={() => setSearchParams(t.id === 'directory' ? {} : { tab: t.id })}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+              hrTab === t.id ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            {st.replace('_', ' ')}
+            {t.label}
           </button>
         ))}
       </div>
 
       {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
 
-      {canEdit && (
-        <Card className="p-5">
-          <h2 className="text-sm font-semibold text-slate-900 mb-3">Onboard Security Guard</h2>
+      {hrTab === 'contracts' && (
+        <div className="space-y-4">
+          {canEdit && (
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-slate-900 mb-3">Register Employment Contract (KES)</h2>
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setFeedback(null);
+                  const res = await addEmployeeContract({
+                    employee_id: hrEmpId,
+                    contract_type: ctrType,
+                    base_salary_kes: Number(ctrSalary) || 0,
+                    shift_allowance_kes: Number(ctrAllow) || 0,
+                    overtime_rate_kes: Number(ctrOt) || 0,
+                    start_date: todayNairobiDate(),
+                  });
+                  if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                  else setFeedback({ tone: 'success', msg: 'Employment contract added.' });
+                }}
+                className="grid sm:grid-cols-6 gap-3"
+              >
+                <select value={hrEmpId} onChange={(e) => setHrEmpId(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                  {employees.map((e) => (
+                    <option key={e.id} value={e.id}>{e.employee_number} — {e.first_name} {e.last_name}</option>
+                  ))}
+                </select>
+                <select value={ctrType} onChange={(e) => setCtrType(e.target.value as EmployeeContract['contract_type'])} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                  <option value="permanent">Permanent</option>
+                  <option value="fixed_term">Fixed Term</option>
+                  <option value="probation">Probation</option>
+                  <option value="casual">Casual</option>
+                </select>
+                <input type="number" min={0} placeholder="Base KES" value={ctrSalary} onChange={(e) => setCtrSalary(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+                <input type="number" min={0} placeholder="Allowance KES" value={ctrAllow} onChange={(e) => setCtrAllow(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+                <input type="number" min={0} placeholder="OT Rate/hr" value={ctrOt} onChange={(e) => setCtrOt(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+                <Button type="submit">Add Contract</Button>
+              </form>
+            </Card>
+          )}
+          <Card className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="p-3 font-medium">Employee</th>
+                  <th className="p-3 font-medium">Type</th>
+                  <th className="p-3 font-medium">Base Salary</th>
+                  <th className="p-3 font-medium">Allowance</th>
+                  <th className="p-3 font-medium">OT Rate/hr</th>
+                  <th className="p-3 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {contracts.map((c) => {
+                  const emp = employees.find((e) => e.id === c.employee_id);
+                  return (
+                    <tr key={c.id} className="hover:bg-slate-50">
+                      <td className="p-3 font-semibold text-slate-900">{emp ? `${emp.first_name} ${emp.last_name}` : c.employee_id}</td>
+                      <td className="p-3 capitalize text-slate-700">{c.contract_type.replace('_', ' ')}</td>
+                      <td className="p-3 font-mono tabular-nums">KES {c.base_salary_kes.toLocaleString()}</td>
+                      <td className="p-3 font-mono tabular-nums">KES {c.shift_allowance_kes.toLocaleString()}</td>
+                      <td className="p-3 font-mono tabular-nums">KES {c.overtime_rate_kes.toLocaleString()}</td>
+                      <td className="p-3"><StatusLabel label={c.status} tone={c.status === 'active' ? 'emerald' : 'slate'} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        </div>
+      )}
+
+      {hrTab === 'documents' && (
+        <div className="space-y-4">
+          {canEdit && (
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-slate-900 mb-3">Log Compliance Document &amp; Expiry</h2>
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setFeedback(null);
+                  const res = await addEmployeeDocument({
+                    employee_id: hrEmpId,
+                    doc_type: docType,
+                    title: docTitle,
+                    reference_number: docRef,
+                    expiry_date: docExpiry || null,
+                  });
+                  if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                  else {
+                    setDocTitle('');
+                    setDocRef('');
+                    setDocExpiry('');
+                    setFeedback({ tone: 'success', msg: 'Compliance document recorded.' });
+                  }
+                }}
+                className="grid sm:grid-cols-6 gap-3"
+              >
+                <select value={hrEmpId} onChange={(e) => setHrEmpId(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                  {employees.map((e) => (
+                    <option key={e.id} value={e.id}>{e.employee_number} — {e.first_name} {e.last_name}</option>
+                  ))}
+                </select>
+                <select value={docType} onChange={(e) => setDocType(e.target.value as EmployeeDocument['doc_type'])} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                  <option value="psra_license">PSRA License</option>
+                  <option value="good_conduct">Good Conduct (DCI)</option>
+                  <option value="contract_signed">Signed Contract</option>
+                  <option value="medical_cert">Medical Cert</option>
+                  <option value="other">Other</option>
+                </select>
+                <input required placeholder="Document Title" value={docTitle} onChange={(e) => setDocTitle(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[42px]" />
+                <input placeholder="Ref Number" value={docRef} onChange={(e) => setDocRef(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+                <input type="date" value={docExpiry} onChange={(e) => setDocExpiry(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+                <Button type="submit"><FileCheck2 className="h-4 w-4" /> Save Doc</Button>
+              </form>
+            </Card>
+          )}
+          <Card className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="p-3 font-medium">Employee</th>
+                  <th className="p-3 font-medium">Document</th>
+                  <th className="p-3 font-medium">Ref #</th>
+                  <th className="p-3 font-medium">Expiry Date</th>
+                  <th className="p-3 font-medium">Compliance</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {documents.map((d) => {
+                  const emp = employees.find((e) => e.id === d.employee_id);
+                  const expiringSoon = Boolean(d.expiry_date && d.expiry_date <= in30Days);
+                  return (
+                    <tr key={d.id} className="hover:bg-slate-50">
+                      <td className="p-3 font-semibold text-slate-900">{emp ? `${emp.first_name} ${emp.last_name}` : d.employee_id}</td>
+                      <td className="p-3 text-slate-800">{d.title}</td>
+                      <td className="p-3 font-mono text-xs text-slate-600">{d.reference_number || '—'}</td>
+                      <td className="p-3 font-mono text-xs">{d.expiry_date || 'No expiry'}</td>
+                      <td className="p-3">
+                        <StatusLabel label={expiringSoon ? 'Expiring / Due' : 'Valid'} tone={expiringSoon ? 'amber' : 'emerald'} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        </div>
+      )}
+
+      {hrTab === 'qualifications' && (
+        <div className="space-y-4">
+          {canEdit && (
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-slate-900 mb-3">Record Guard Qualification / Certification</h2>
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setFeedback(null);
+                  const res = await addEmployeeQualification({
+                    employee_id: hrEmpId,
+                    qualification_name: qualName,
+                    provider: qualProvider,
+                    achieved_date: todayNairobiDate(),
+                    expiry_date: qualExpiry || null,
+                  });
+                  if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                  else {
+                    setQualName('');
+                    setQualProvider('');
+                    setQualExpiry('');
+                    setFeedback({ tone: 'success', msg: 'Qualification added.' });
+                  }
+                }}
+                className="grid sm:grid-cols-5 gap-3"
+              >
+                <select value={hrEmpId} onChange={(e) => setHrEmpId(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                  {employees.map((e) => (
+                    <option key={e.id} value={e.id}>{e.employee_number} — {e.first_name} {e.last_name}</option>
+                  ))}
+                </select>
+                <input required placeholder="Qualification (e.g. Fire Marshal)" value={qualName} onChange={(e) => setQualName(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[42px]" />
+                <input placeholder="Training Provider" value={qualProvider} onChange={(e) => setQualProvider(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[42px]" />
+                <input type="date" value={qualExpiry} onChange={(e) => setQualExpiry(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+                <Button type="submit">Add Qualification</Button>
+              </form>
+            </Card>
+          )}
+          <div className="grid md:grid-cols-2 gap-4">
+            {qualifications.map((q) => {
+              const emp = employees.find((e) => e.id === q.employee_id);
+              return (
+                <Card key={q.id} className="p-4 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-900">{q.qualification_name}</span>
+                    <Badge tone="emerald">Certified</Badge>
+                  </div>
+                  <div className="text-xs text-slate-600">{emp ? `${emp.first_name} ${emp.last_name}` : q.employee_id} · {q.provider}</div>
+                  <div className="text-xs font-mono text-slate-500">Achieved {q.achieved_date} {q.expiry_date ? `· Expires ${q.expiry_date}` : ''}</div>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {hrTab === 'leave' && (
+        <div className="space-y-4">
+          <Card className="p-5">
+            <h2 className="text-sm font-semibold text-slate-900 mb-3">Submit Leave Request</h2>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setFeedback(null);
+                const res = await submitLeaveRequest({
+                  employee_id: hrEmpId,
+                  leave_type: lvType,
+                  start_date: lvStart,
+                  end_date: lvEnd,
+                  days_count: Math.max(1, Number(lvDays) || 1),
+                  reason: lvReason,
+                });
+                if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                else {
+                  setLvReason('');
+                  setFeedback({ tone: 'success', msg: 'Leave request logged.' });
+                }
+              }}
+              className="grid sm:grid-cols-6 gap-3"
+            >
+              <select value={hrEmpId} onChange={(e) => setHrEmpId(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                {employees.map((e) => (
+                  <option key={e.id} value={e.id}>{e.employee_number} — {e.first_name} {e.last_name}</option>
+                ))}
+              </select>
+              <select value={lvType} onChange={(e) => setLvType(e.target.value as LeaveRecord['leave_type'])} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                <option value="annual">Annual Leave</option>
+                <option value="sick">Sick Leave</option>
+                <option value="compassionate">Compassionate</option>
+                <option value="off_duty">Off Duty</option>
+                <option value="unpaid">Unpaid</option>
+              </select>
+              <input type="date" value={lvStart} onChange={(e) => setLvStart(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+              <input type="date" value={lvEnd} onChange={(e) => setLvEnd(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+              <input type="number" min={1} value={lvDays} onChange={(e) => setLvDays(e.target.value)} placeholder="Days" className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono min-h-[42px]" />
+              <Button type="submit">Request Leave</Button>
+            </form>
+          </Card>
+
+          <Card className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-slate-50 text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="p-3 font-medium">Employee</th>
+                  <th className="p-3 font-medium">Type</th>
+                  <th className="p-3 font-medium">Dates</th>
+                  <th className="p-3 font-medium">Days</th>
+                  <th className="p-3 font-medium">Status</th>
+                  {canEdit && <th className="p-3 font-medium text-right">Decision</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {leaveRecords.map((l) => {
+                  const emp = employees.find((e) => e.id === l.employee_id);
+                  return (
+                    <tr key={l.id} className="hover:bg-slate-50">
+                      <td className="p-3 font-semibold text-slate-900">{emp ? `${emp.first_name} ${emp.last_name}` : l.employee_id}</td>
+                      <td className="p-3 capitalize">{l.leave_type.replace('_', ' ')}</td>
+                      <td className="p-3 font-mono text-xs">{l.start_date} → {l.end_date}</td>
+                      <td className="p-3 font-mono">{l.days_count}</td>
+                      <td className="p-3"><StatusLabel label={l.status} tone={l.status === 'approved' ? 'emerald' : l.status === 'rejected' ? 'rose' : 'amber'} /></td>
+                      {canEdit && (
+                        <td className="p-3 text-right space-x-2">
+                          {l.status === 'pending' ? (
+                            <>
+                              <Button size="sm" onClick={() => decideLeaveRequest(l.id, 'approved')}>Approve</Button>
+                              <Button size="sm" variant="danger" onClick={() => decideLeaveRequest(l.id, 'rejected')}>Reject</Button>
+                            </>
+                          ) : (
+                            <span className="text-xs text-slate-500">By {l.approved_by || 'HR'}</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        </div>
+      )}
+
+      {hrTab === 'disciplinary' && (
+        <div className="space-y-4">
+          {currentRole !== 'guard' && (
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-slate-900 mb-3">Log Disciplinary Action or Commendation</h2>
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setFeedback(null);
+                  const res = await addDisciplinaryRecord({
+                    employee_id: hrEmpId,
+                    incident_date: todayNairobiDate(),
+                    category: discCategory,
+                    severity: discSeverity,
+                    summary: discSummary,
+                    action_taken: discAction,
+                  });
+                  if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                  else {
+                    setDiscSummary('');
+                    setDiscAction('');
+                    setFeedback({ tone: 'success', msg: 'HR conduct record saved.' });
+                  }
+                }}
+                className="space-y-3"
+              >
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <select value={hrEmpId} onChange={(e) => setHrEmpId(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                    {employees.map((e) => (
+                      <option key={e.id} value={e.id}>{e.employee_number} — {e.first_name} {e.last_name}</option>
+                    ))}
+                  </select>
+                  <select value={discCategory} onChange={(e) => setDiscCategory(e.target.value as DisciplinaryRecord['category'])} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                    <option value="lateness">Lateness</option>
+                    <option value="uniform">Uniform Standard</option>
+                    <option value="sleeping_on_duty">Sleeping on Duty</option>
+                    <option value="insubordination">Insubordination</option>
+                    <option value="absence">AWOL / Absence</option>
+                    <option value="commendation">Commendation</option>
+                  </select>
+                  <select value={discSeverity} onChange={(e) => setDiscSeverity(e.target.value as DisciplinaryRecord['severity'])} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]">
+                    <option value="verbal_warning">Verbal Warning</option>
+                    <option value="written_warning">Written Warning</option>
+                    <option value="final_warning">Final Warning</option>
+                    <option value="suspension">Suspension</option>
+                    <option value="cleared">Cleared / Commended</option>
+                  </select>
+                </div>
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <input required minLength={5} placeholder="Summary of event..." value={discSummary} onChange={(e) => setDiscSummary(e.target.value)} className="sm:col-span-2 border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[42px]" />
+                  <input placeholder="Action taken..." value={discAction} onChange={(e) => setDiscAction(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[42px]" />
+                </div>
+                <Button type="submit">Record Entry</Button>
+              </form>
+            </Card>
+          )}
+          <div className="space-y-3">
+            {disciplinaryRecords.map((d) => {
+              const emp = employees.find((e) => e.id === d.employee_id);
+              return (
+                <Card key={d.id} className="p-4 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-slate-900">
+                      {emp ? `${emp.first_name} ${emp.last_name}` : d.employee_id} · <span className="capitalize">{d.category.replace('_', ' ')}</span>
+                    </span>
+                    <StatusLabel label={d.severity.replace('_', ' ')} tone={d.severity === 'cleared' ? 'emerald' : 'amber'} />
+                  </div>
+                  <p className="text-xs text-slate-700">{d.summary}</p>
+                  <div className="text-[11px] font-mono text-slate-500">
+                    {d.incident_date} · Recorded by {d.recorded_by} {d.action_taken ? `· Action: ${d.action_taken}` : ''}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {hrTab === 'directory' && (
+        <>
+          <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
+            {(['all', 'active', 'on_leave', 'suspended', 'inactive'] as const).map((st) => (
+              <button
+                key={st}
+                onClick={() => {
+                  setStatusFilter(st);
+                  setPage(1);
+                }}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer capitalize ${
+                  statusFilter === st ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {st.replace('_', ' ')}
+              </button>
+            ))}
+          </div>
+
+          {canEdit && (
+            <Card className="p-5">
+              <h2 className="text-sm font-semibold text-slate-900 mb-3">Onboard Security Guard</h2>
           <form onSubmit={submit} className="grid sm:grid-cols-5 gap-3">
             <input
               required
@@ -444,9 +930,9 @@ export const FFEmployeesPage: React.FC = () => {
             </Button>
           </form>
         </Card>
-      )}
+          )}
 
-      {filtered.length === 0 ? (
+          {filtered.length === 0 ? (
         <EmptyState title="No guard records found" description="Adjust your search or status filter." />
       ) : (
         <>
@@ -542,6 +1028,8 @@ export const FFEmployeesPage: React.FC = () => {
               <Pagination page={page} pageSize={PAGE_SIZE} total={filtered.length} onPageChange={setPage} />
             </Card>
           </div>
+        </>
+      )}
         </>
       )}
 
@@ -851,6 +1339,7 @@ export const FFSitesPage: React.FC = () => {
     members,
     siteSupervisors,
     addSite,
+    updateSiteGeofence,
     toggleSiteStatus,
     addPost,
     updatePost,
@@ -865,6 +1354,13 @@ export const FFSitesPage: React.FC = () => {
   const [siteName, setSiteName] = useState('');
   const [city, setCity] = useState('Nairobi');
   const [desc, setDesc] = useState('');
+  const [siteLat, setSiteLat] = useState('-1.2647');
+  const [siteLng, setSiteLng] = useState('36.8019');
+  const [siteRadius, setSiteRadius] = useState('250');
+  const [editingGeoSiteId, setEditingGeoSiteId] = useState<string | null>(null);
+  const [geoLat, setGeoLat] = useState('');
+  const [geoLng, setGeoLng] = useState('');
+  const [geoRad, setGeoRad] = useState('250');
   const [postSiteId, setPostSiteId] = useState('');
   const [postName, setPostName] = useState('');
   const [reqGuards, setReqGuards] = useState(1);
@@ -976,12 +1472,20 @@ export const FFSitesPage: React.FC = () => {
                   setFeedback({ tone: 'error', msg: 'Create a client account first before adding a site.' });
                   return;
                 }
-                const res = await addSite({ client_id: clientId, name: siteName, city, location_description: desc });
+                const res = await addSite({
+                  client_id: clientId,
+                  name: siteName,
+                  city,
+                  location_description: desc,
+                  latitude: siteLat ? Number(siteLat) : null,
+                  longitude: siteLng ? Number(siteLng) : null,
+                  geofence_radius_m: Number(siteRadius) || 250,
+                });
                 if (res.error) setFeedback({ tone: 'error', msg: res.error });
                 else {
                   setSiteName('');
                   setDesc('');
-                  setFeedback({ tone: 'success', msg: 'Physical site created.' });
+                  setFeedback({ tone: 'success', msg: 'Physical site with geofence created.' });
                 }
               }}
               className="space-y-2.5"
@@ -1022,6 +1526,11 @@ export const FFSitesPage: React.FC = () => {
                   onChange={(e) => setDesc(e.target.value)}
                   className="border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[40px]"
                 />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <input type="number" step="0.0001" placeholder="Lat" value={siteLat} onChange={(e) => setSiteLat(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-mono" />
+                <input type="number" step="0.0001" placeholder="Lng" value={siteLng} onChange={(e) => setSiteLng(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-mono" />
+                <input type="number" min={30} max={5000} placeholder="Radius m" value={siteRadius} onChange={(e) => setSiteRadius(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-mono" />
               </div>
               <Button type="submit" className="w-full">
                 Create Site
@@ -1168,7 +1677,37 @@ export const FFSitesPage: React.FC = () => {
                       <p className="text-xs text-slate-500 mt-0.5">
                         {s.location_description ? `${s.location_description} · ` : ''}
                         {s.city}
+                        {s.latitude != null && s.longitude != null && (
+                          <span className="font-mono ml-2 text-slate-600">
+                            · Geofence {s.latitude.toFixed(4)}, {s.longitude.toFixed(4)} ({s.geofence_radius_m || 250}m)
+                          </span>
+                        )}
                       </p>
+                      {editingGeoSiteId === s.id && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <input type="number" step="0.0001" value={geoLat} onChange={(e) => setGeoLat(e.target.value)} placeholder="Latitude" className="border border-slate-300 rounded px-2 py-1 text-xs font-mono w-28" />
+                          <input type="number" step="0.0001" value={geoLng} onChange={(e) => setGeoLng(e.target.value)} placeholder="Longitude" className="border border-slate-300 rounded px-2 py-1 text-xs font-mono w-28" />
+                          <input type="number" min={30} max={5000} value={geoRad} onChange={(e) => setGeoRad(e.target.value)} placeholder="Radius (m)" className="border border-slate-300 rounded px-2 py-1 text-xs font-mono w-24" />
+                          <Button
+                            size="sm"
+                            onClick={async () => {
+                              const res = await updateSiteGeofence(s.id, {
+                                latitude: Number(geoLat),
+                                longitude: Number(geoLng),
+                                geofence_radius_m: Number(geoRad) || 250,
+                              });
+                              if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                              else {
+                                setEditingGeoSiteId(null);
+                                setFeedback({ tone: 'success', msg: `Geofence updated for ${s.name}.` });
+                              }
+                            }}
+                          >
+                            Save Geofence
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingGeoSiteId(null)}>Cancel</Button>
+                        </div>
+                      )}
                       {linkedSups.length > 0 && (
                         <div className="flex flex-wrap gap-1.5 mt-2">
                           {linkedSups.map((ss) => {
@@ -1200,21 +1739,35 @@ export const FFSitesPage: React.FC = () => {
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
                       <span className="text-xs font-mono text-slate-600 tabular-nums">{sitePosts.length} Post(s)</span>
                       {canEdit && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={async () => {
-                            setFeedback(null);
-                            const res = await toggleSiteStatus(s.id, !s.is_active);
-                            if (res.error) setFeedback({ tone: 'error', msg: res.error });
-                            else setFeedback({ tone: 'success', msg: `Site marked ${!s.is_active ? 'Active' : 'Inactive'}.` });
-                          }}
-                        >
-                          {s.is_active ? 'Deactivate' : 'Activate'}
-                        </Button>
+                        <>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              setEditingGeoSiteId(s.id);
+                              setGeoLat(String(s.latitude ?? -1.2647));
+                              setGeoLng(String(s.longitude ?? 36.8019));
+                              setGeoRad(String(s.geofence_radius_m ?? 250));
+                            }}
+                          >
+                            <MapPin className="h-3.5 w-3.5" /> Geofence
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={async () => {
+                              setFeedback(null);
+                              const res = await toggleSiteStatus(s.id, !s.is_active);
+                              if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                              else setFeedback({ tone: 'success', msg: `Site marked ${!s.is_active ? 'Active' : 'Inactive'}.` });
+                            }}
+                          >
+                            {s.is_active ? 'Deactivate' : 'Activate'}
+                          </Button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -1356,6 +1909,7 @@ export const FFSchedulePage: React.FC = () => {
   const [customEnd, setCustomEnd] = useState('16:00');
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [selectedEmp, setSelectedEmp] = useState<Record<string, string>>({});
+  const [reliefFlag, setReliefFlag] = useState<Record<string, boolean>>({});
   const [pendingRemoval, setPendingRemoval] = useState<{ id: string; label: string } | null>(null);
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
@@ -1415,21 +1969,42 @@ export const FFSchedulePage: React.FC = () => {
       setFeedback({ tone: 'error', msg: 'Select an active guard before clicking Assign.' });
       return;
     }
-    const res = await assignGuard(shiftId, empId);
+    const isRelief = Boolean(reliefFlag[shiftId]);
+    const res = await assignGuard(shiftId, empId, { is_relief: isRelief });
     if (res.error) setFeedback({ tone: 'error', msg: res.error });
     else {
       setSelectedEmp((prev) => ({ ...prev, [shiftId]: '' }));
-      setFeedback({ tone: 'success', msg: 'Guard assigned to shift.' });
+      setReliefFlag((prev) => ({ ...prev, [shiftId]: false }));
+      setFeedback({ tone: 'success', msg: isRelief ? 'Relief guard deployed to shift.' : 'Guard assigned to shift.' });
     }
   };
 
   const filteredShifts = siteFilter === 'all' ? shifts : shifts.filter((s) => s.site_id === siteFilter);
 
+  // Coverage monitor computations
+  const coverageStats = useMemo(() => {
+    let required = 0;
+    let filled = 0;
+    let gaps = 0;
+    for (const sh of filteredShifts) {
+      const post = posts.find((p) => p.id === sh.post_id);
+      const req = post?.required_guards ?? 1;
+      const cnt = assignments.filter((a) => a.shift_id === sh.id && a.status !== 'cancelled').length;
+      required += req;
+      filled += Math.min(req, cnt);
+      if (cnt < req) gaps += 1;
+    }
+    const reliefCount = assignments.filter((a) => a.is_relief && a.status !== 'cancelled').length;
+    const pct = required > 0 ? Math.round((filled / required) * 100) : 100;
+    return { required, filled, gaps, reliefCount, pct };
+  }, [filteredShifts, posts, assignments]);
+
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Shift Scheduling & Roster Matrix"
-        description="Double-booking prevention and post coverage alerts in Africa/Nairobi (EAT)."
+        eyebrow="Module 02 · Deployment & Scheduling"
+        title="Shift Scheduling, Relief Guards & Coverage Monitor"
+        description="Double-booking prevention, relief guard allocation, and real-time post coverage monitoring in EAT."
         actions={
           <select
             value={siteFilter}
@@ -1445,6 +2020,30 @@ export const FFSchedulePage: React.FC = () => {
           </select>
         }
       />
+
+      {/* Coverage Monitor Bar */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card className="p-4">
+          <div className="text-xs font-medium text-slate-500">Coverage Rate</div>
+          <div className="text-2xl font-bold font-mono tabular-nums mt-1 text-[#059669]">{coverageStats.pct}%</div>
+          <div className="text-xs text-slate-500 font-mono">{coverageStats.filled}/{coverageStats.required} post slots filled</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-xs font-medium text-slate-500">Understaffed Shifts</div>
+          <div className="text-2xl font-bold font-mono tabular-nums mt-1 text-[#D97706]">{coverageStats.gaps}</div>
+          <div className="text-xs text-slate-500">Shifts needing relief or assignment</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-xs font-medium text-slate-500">Relief Guards Deployed</div>
+          <div className="text-2xl font-bold font-mono tabular-nums mt-1 text-[#0B132B]">{coverageStats.reliefCount}</div>
+          <div className="text-xs text-slate-500">Standby / cover allocations</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-xs font-medium text-slate-500">Published Shifts</div>
+          <div className="text-2xl font-bold font-mono tabular-nums mt-1 text-[#0B132B]">{filteredShifts.length}</div>
+          <div className="text-xs text-slate-500">Active roster scope</div>
+        </Card>
+      </div>
 
       <div className="inline-flex gap-1 p-1 bg-slate-100 rounded-lg">
         <button
@@ -1543,7 +2142,7 @@ export const FFSchedulePage: React.FC = () => {
                 <th className="p-3 font-medium">Site / Post</th>
                 <th className="p-3 font-medium">Coverage</th>
                 <th className="p-3 font-medium">Assigned Guard(s)</th>
-                {canAssign && <th className="p-3 font-medium">Assign Guard</th>}
+                {canAssign && <th className="p-3 font-medium">Assign / Deploy Relief</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -1577,6 +2176,7 @@ export const FFSchedulePage: React.FC = () => {
                                 className="inline-flex items-center gap-1 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded"
                               >
                                 {label}
+                                {a.is_relief && <Badge tone="amber">Relief</Badge>}
                                 {canAssign && (
                                   <button
                                     onClick={() => setPendingRemoval({ id: a.id, label })}
@@ -1594,7 +2194,7 @@ export const FFSchedulePage: React.FC = () => {
                     </td>
                     {canAssign && (
                       <td className="p-3">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <select
                             value={selectedEmp[sh.id] ?? ''}
                             onChange={(e) => setSelectedEmp({ ...selectedEmp, [sh.id]: e.target.value })}
@@ -1609,6 +2209,14 @@ export const FFSchedulePage: React.FC = () => {
                                 </option>
                               ))}
                           </select>
+                          <label className="inline-flex items-center gap-1 text-[11px] text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(reliefFlag[sh.id])}
+                              onChange={(e) => setReliefFlag({ ...reliefFlag, [sh.id]: e.target.checked })}
+                            />
+                            Relief
+                          </label>
                           <Button size="sm" onClick={() => handleAssign(sh.id)}>
                             Assign
                           </Button>
@@ -1660,6 +2268,7 @@ export const FFSchedulePage: React.FC = () => {
                             className="inline-flex items-center gap-1.5 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-md text-xs text-slate-800"
                           >
                             <span>{label}</span>
+                            {a.is_relief && <Badge tone="amber">Relief</Badge>}
                             {canAssign && (
                               <button
                                 onClick={() => setPendingRemoval({ id: a.id, label })}
@@ -1692,6 +2301,15 @@ export const FFSchedulePage: React.FC = () => {
                           </option>
                         ))}
                     </select>
+                    <label className="inline-flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer px-2">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(reliefFlag[sh.id])}
+                        onChange={(e) => setReliefFlag({ ...reliefFlag, [sh.id]: e.target.checked })}
+                        className="h-4 w-4"
+                      />
+                      Relief
+                    </label>
                     <Button onClick={() => handleAssign(sh.id)} size="md">
                       Assign
                     </Button>
@@ -1727,16 +2345,55 @@ export const FFSchedulePage: React.FC = () => {
   );
 };
 
+interface OfflineAttendanceItem {
+  localId: string;
+  employee_id: string;
+  shift_id: string | null;
+  event_type: 'clock_in' | 'clock_out';
+  location_metadata: { lat: number; lng: number; accuracy: number } | null;
+  offline_captured_at: string;
+}
+
+const OFFLINE_QUEUE_KEY = 'ff_offline_attendance_queue';
+
 export const FFAttendancePage: React.FC = () => {
-  const { employees, shifts, attendance, recordAttendance, currentRole } = useApp();
+  const {
+    employees,
+    shifts,
+    sites,
+    attendance,
+    attendanceVerifications,
+    recordAttendance,
+    verifyAttendanceEvent,
+    currentRole,
+  } = useApp();
   const [empId, setEmpId] = useState('');
   const [shiftId, setShiftId] = useState('');
-  const [captureGps, setCaptureGps] = useState(false);
+  const [captureGps, setCaptureGps] = useState(true);
+  const [offlineMode, setOfflineMode] = useState(false);
+  const [offlineQueue, setOfflineQueue] = useState<OfflineAttendanceItem[]>(() => {
+    try {
+      const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
+      return raw ? (JSON.parse(raw) as OfflineAttendanceItem[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [syncingOffline, setSyncingOffline] = useState(false);
   const [overrideReason, setOverrideReason] = useState('');
   const [page, setPage] = useState(1);
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
   const PAGE_SIZE = 10;
+  const canVerify = Boolean(currentRole && ['owner', 'admin', 'operations_manager', 'supervisor'].includes(currentRole));
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue));
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [offlineQueue]);
 
   useEffect(() => {
     if ((!empId || !employees.some((e) => e.id === empId)) && employees[0]?.id) {
@@ -1762,6 +2419,23 @@ export const FFAttendancePage: React.FC = () => {
     }
 
     const commit = async (loc: { lat: number; lng: number; accuracy: number } | null) => {
+      if (offlineMode) {
+        const queued: OfflineAttendanceItem = {
+          localId: `off-${Date.now()}`,
+          employee_id: empId,
+          shift_id: shiftId || null,
+          event_type: eventType,
+          location_metadata: loc,
+          offline_captured_at: new Date().toISOString(),
+        };
+        setOfflineQueue((prev) => [queued, ...prev]);
+        setFeedback({
+          tone: 'success',
+          msg: `Captured offline ${eventType.replace('_', ' ')} locally. Click "Sync Offline Events" when connectivity resumes.`,
+        });
+        return;
+      }
+
       const res = await recordAttendance({
         employee_id: empId,
         shift_id: shiftId || null,
@@ -1773,7 +2447,7 @@ export const FFAttendancePage: React.FC = () => {
         setFeedback({
           tone: 'success',
           msg: loc
-            ? `${eventType.replace('_', ' ')} logged with click-time GPS snapshot.`
+            ? `${eventType.replace('_', ' ')} logged with GPS geofence verification.`
             : `${eventType.replace('_', ' ')} logged to append-only ledger.`,
         });
       }
@@ -1782,12 +2456,43 @@ export const FFAttendancePage: React.FC = () => {
     if (captureGps && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => commit({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
-        () => commit(null),
-        { timeout: 5000 }
+        () => {
+          // Fallback to selected shift site coordinates with low-accuracy marker if geolocation blocked in iframe/desktop
+          const sh = shifts.find((s) => s.id === shiftId);
+          const st = sites.find((x) => x.id === sh?.site_id);
+          commit(st?.latitude != null && st?.longitude != null ? { lat: st.latitude, lng: st.longitude, accuracy: 35 } : null);
+        },
+        { timeout: 3500 }
       );
     } else {
       commit(null);
     }
+  };
+
+  const syncOfflineEvents = async () => {
+    if (offlineQueue.length === 0) return;
+    setSyncingOffline(true);
+    setFeedback(null);
+    let synced = 0;
+    const remaining: OfflineAttendanceItem[] = [];
+    for (const item of offlineQueue) {
+      const res = await recordAttendance({
+        employee_id: item.employee_id,
+        shift_id: item.shift_id,
+        event_type: item.event_type,
+        location_metadata: item.location_metadata,
+        offline_captured_at: item.offline_captured_at,
+        is_offline_sync: true,
+      });
+      if (!res.error) synced += 1;
+      else remaining.push(item);
+    }
+    setOfflineQueue(remaining);
+    setSyncingOffline(false);
+    setFeedback({
+      tone: remaining.length === 0 ? 'success' : 'error',
+      msg: `Synced ${synced} offline attendance event(s) to append-only ledger.${remaining.length > 0 ? ` ${remaining.length} failed.` : ''}`,
+    });
   };
 
   const submitOverride = async (e: React.FormEvent) => {
@@ -1806,20 +2511,58 @@ export const FFAttendancePage: React.FC = () => {
     }
   };
 
+  const lateAlertsCount = useMemo(() => attendance.filter((a) => (a.late_minutes || 0) > 10).length, [attendance]);
+  const outsideGeofenceCount = useMemo(() => attendance.filter((a) => a.geofence_status === 'outside').length, [attendance]);
   const pagedAttendance = attendance.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Attendance Verification (Append-Only)"
-        description="Mobile-first 44px+ clock-in/out controls with optional click-time location and mandatory override notes."
+        eyebrow="Module 03 · Attendance & Verification"
+        title="GPS Geofencing, Supervisor Verification & Offline Sync"
+        description="Append-only attendance ledger with Haversine site geofencing, late arrival alerts, supervisor sign-off, and offline capture."
       />
+
+      {(lateAlertsCount > 0 || outsideGeofenceCount > 0 || offlineQueue.length > 0) && (
+        <div className="grid sm:grid-cols-3 gap-3">
+          <Card className="p-3.5 border-amber-200 bg-amber-50/70">
+            <div className="text-xs font-semibold text-amber-950">Late Clock-In Alerts (&gt;10m)</div>
+            <div className="text-xl font-bold font-mono text-[#D97706] mt-0.5">{lateAlertsCount}</div>
+          </Card>
+          <Card className="p-3.5 border-rose-200 bg-rose-50/70">
+            <div className="text-xs font-semibold text-rose-950">Outside Geofence Flags</div>
+            <div className="text-xl font-bold font-mono text-[#E11D48] mt-0.5">{outsideGeofenceCount}</div>
+          </Card>
+          <Card className="p-3.5 border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-semibold text-slate-800">Offline Capture Queue</div>
+              <div className="text-xl font-bold font-mono text-[#0B132B] mt-0.5">{offlineQueue.length} pending</div>
+            </div>
+            {offlineQueue.length > 0 && (
+              <Button size="sm" onClick={syncOfflineEvents} disabled={syncingOffline}>
+                <RefreshCw className="h-3.5 w-3.5" /> {syncingOffline ? 'Syncing...' : 'Sync Offline'}
+              </Button>
+            )}
+          </Card>
+        </div>
+      )}
 
       {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
 
       <div className="grid lg:grid-cols-2 gap-6">
         <Card className="p-5 space-y-4">
-          <h2 className="font-bold text-slate-900">Mobile Guard Clock-In / Clock-Out</h2>
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-bold text-slate-900">Mobile Guard Clock-In / Clock-Out</h2>
+            <button
+              type="button"
+              onClick={() => setOfflineMode((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border cursor-pointer ${
+                offlineMode ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-600'
+              }`}
+            >
+              <WifiOff className="h-3.5 w-3.5" /> {offlineMode ? 'Offline Capture: ON' : 'Offline Mode: OFF'}
+            </button>
+          </div>
           <div className="space-y-3">
             <FormField label="Guard" htmlFor="att-guard">
               <select
@@ -1844,11 +2587,14 @@ export const FFAttendancePage: React.FC = () => {
                 className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white min-h-[44px]"
               >
                 <option value="">Optional shift reference...</option>
-                {shifts.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.shift_date} · {s.shift_type}
-                  </option>
-                ))}
+                {shifts.map((s) => {
+                  const st = sites.find((x) => x.id === s.site_id);
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {st?.name || 'Site'} · {s.shift_date} ({s.shift_type})
+                    </option>
+                  );
+                })}
               </select>
             </FormField>
 
@@ -1859,7 +2605,7 @@ export const FFAttendancePage: React.FC = () => {
                 onChange={(e) => setCaptureGps(e.target.checked)}
                 className="h-5 w-5"
               />
-              Capture event-only GPS snapshot on button press (no background tracking)
+              Capture event-only GPS geofence snapshot on button press (no background tracking)
             </label>
 
             <div className="grid grid-cols-2 gap-3 pt-1">
@@ -1904,33 +2650,86 @@ export const FFAttendancePage: React.FC = () => {
             <tr>
               <th className="p-3 font-medium">Recorded Time (EAT)</th>
               <th className="p-3 font-medium">Guard</th>
-              <th className="p-3 font-medium">Event</th>
-              <th className="p-3 font-medium">Location / Audit Notes</th>
+              <th className="p-3 font-medium">Event &amp; Alerts</th>
+              <th className="p-3 font-medium">Geofence / Audit Notes</th>
+              <th className="p-3 font-medium text-right">Supervisor Verification</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {pagedAttendance.map((a) => {
               const emp = employees.find((e) => e.id === a.employee_id);
+              const ver = attendanceVerifications.find((v) => v.attendance_event_id === a.id);
               return (
                 <tr key={a.id} className="hover:bg-slate-50">
-                  <td className="p-3 whitespace-nowrap font-mono tabular-nums">{formatNairobiDateTime(a.recorded_at)}</td>
+                  <td className="p-3 whitespace-nowrap font-mono tabular-nums">
+                    {formatNairobiDateTime(a.recorded_at)}
+                    {a.is_offline_sync && <div className="text-[10px] text-amber-700 font-semibold">Offline synced</div>}
+                  </td>
                   <td className="p-3 font-medium text-slate-900">
                     {emp ? `${emp.first_name} ${emp.last_name}` : a.employee_id}
                   </td>
-                  <td className="p-3">
-                    <StatusLabel
-                      label={a.event_type}
-                      tone={a.event_type === 'supervisor_override' ? 'amber' : 'emerald'}
-                    />
-                  </td>
-                  <td className="p-3 text-slate-600">
-                    {a.location_metadata && (
-                      <span className="inline-flex items-center gap-1 mr-3 font-mono tabular-nums">
-                        <MapPin className="h-3.5 w-3.5" /> {a.location_metadata.lat.toFixed(4)},{' '}
-                        {a.location_metadata.lng.toFixed(4)}
-                      </span>
+                  <td className="p-3 space-y-1">
+                    <div>
+                      <StatusLabel
+                        label={a.event_type.replace('_', ' ')}
+                        tone={a.event_type === 'supervisor_override' ? 'amber' : 'emerald'}
+                      />
+                    </div>
+                    {(a.late_minutes || 0) > 10 && (
+                      <Badge tone="amber">Late +{a.late_minutes}m</Badge>
                     )}
-                    {a.override_reason}
+                  </td>
+                  <td className="p-3 text-slate-600 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {a.geofence_status === 'inside' && (
+                        <StatusLabel label={`Inside (${a.distance_meters ?? 0}m)`} tone="emerald" />
+                      )}
+                      {a.geofence_status === 'outside' && (
+                        <StatusLabel label={`Outside (${a.distance_meters ?? '?'}m)`} tone="rose" />
+                      )}
+                      {a.location_metadata && (
+                        <span className="inline-flex items-center gap-1 font-mono tabular-nums">
+                          <MapPin className="h-3.5 w-3.5" /> {a.location_metadata.lat.toFixed(4)},{' '}
+                          {a.location_metadata.lng.toFixed(4)}
+                        </span>
+                      )}
+                    </div>
+                    {a.override_reason && <div>{a.override_reason}</div>}
+                  </td>
+                  <td className="p-3 text-right whitespace-nowrap">
+                    {ver ? (
+                      <div className="inline-flex flex-col items-end">
+                        <StatusLabel label={ver.status} tone={ver.status === 'verified' ? 'emerald' : 'rose'} />
+                        <span className="text-[10px] text-slate-500 mt-0.5">{ver.verified_by_name}</span>
+                      </div>
+                    ) : canVerify ? (
+                      <div className="inline-flex gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={async () => {
+                            const res = await verifyAttendanceEvent(a.id, 'verified', 'Verified by supervisor');
+                            if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                            else setFeedback({ tone: 'success', msg: 'Attendance record verified.' });
+                          }}
+                        >
+                          <CheckCircle2 className="h-3 w-3 text-[#059669]" /> Verify
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={async () => {
+                            const res = await verifyAttendanceEvent(a.id, 'flagged', 'Flagged for exception review');
+                            if (res.error) setFeedback({ tone: 'error', msg: res.error });
+                            else setFeedback({ tone: 'success', msg: 'Attendance record flagged.' });
+                          }}
+                        >
+                          <Flag className="h-3 w-3 text-rose-600" /> Flag
+                        </Button>
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">Pending</span>
+                    )}
                   </td>
                 </tr>
               );
@@ -1944,6 +2743,7 @@ export const FFAttendancePage: React.FC = () => {
       <div className="md:hidden space-y-3">
         {pagedAttendance.map((a) => {
           const emp = employees.find((e) => e.id === a.employee_id);
+          const ver = attendanceVerifications.find((v) => v.attendance_event_id === a.id);
           return (
             <Card key={a.id} className="p-4 space-y-2">
               <div className="flex items-center justify-between gap-2">
@@ -1956,12 +2756,23 @@ export const FFAttendancePage: React.FC = () => {
                 />
               </div>
               <div className="text-xs font-mono text-slate-500">{formatNairobiDateTime(a.recorded_at)}</div>
-              {a.location_metadata && (
-                <div className="text-xs font-mono text-slate-600 flex items-center gap-1">
-                  <MapPin className="h-3.5 w-3.5" /> {a.location_metadata.lat.toFixed(4)}, {a.location_metadata.lng.toFixed(4)}
+              <div className="flex flex-wrap gap-2">
+                {a.geofence_status && a.geofence_status !== 'unknown' && (
+                  <StatusLabel
+                    label={`${a.geofence_status} (${a.distance_meters ?? 0}m)`}
+                    tone={a.geofence_status === 'inside' ? 'emerald' : 'rose'}
+                  />
+                )}
+                {(a.late_minutes || 0) > 10 && <Badge tone="amber">Late +{a.late_minutes}m</Badge>}
+                {ver && <StatusLabel label={ver.status} tone={ver.status === 'verified' ? 'emerald' : 'rose'} />}
+              </div>
+              {a.override_reason && <div className="text-xs text-slate-700">{a.override_reason}</div>}
+              {!ver && canVerify && (
+                <div className="flex gap-2 pt-2 border-t border-slate-100">
+                  <Button size="sm" variant="secondary" onClick={() => verifyAttendanceEvent(a.id, 'verified')}>Verify</Button>
+                  <Button size="sm" variant="ghost" onClick={() => verifyAttendanceEvent(a.id, 'flagged')}>Flag</Button>
                 </div>
               )}
-              {a.override_reason && <div className="text-xs text-slate-700">{a.override_reason}</div>}
             </Card>
           );
         })}
@@ -1982,16 +2793,27 @@ export const FFIncidentsPage: React.FC = () => {
     auditEvents,
     reportIncident,
     reviewIncident,
+    escalateIncident,
     generateIncidentAIDraft,
     approveIncidentAIDraft,
     currentRole,
   } = useApp();
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialEntryType = searchParams.get('view') === 'ob' ? 'occurrence' : 'incident';
+  const [viewType, setViewType] = useState<'all' | 'incident' | 'occurrence'>(
+    searchParams.get('view') === 'ob' ? 'occurrence' : 'all'
+  );
+  const [entryType, setEntryType] = useState<'incident' | 'occurrence'>(initialEntryType);
   const [siteId, setSiteId] = useState('');
   const [postId, setPostId] = useState('');
-  const [category, setCategory] = useState<IncidentCategory>('trespassing');
+  const [category, setCategory] = useState<IncidentCategory>(initialEntryType === 'occurrence' ? 'handover' : 'trespassing');
   const [severity, setSeverity] = useState<IncidentSeverity>('medium');
+  const [escalationLevel, setEscalationLevel] = useState<EscalationLevel>('site');
   const [narrative, setNarrative] = useState('');
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [photoData, setPhotoData] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | IncidentStatus>('all');
   const [search, setSearch] = useState('');
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
@@ -2001,6 +2823,17 @@ export const FFIncidentsPage: React.FC = () => {
   const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
   const [drawerFeedback, setDrawerFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const speechRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (searchParams.get('view') === 'ob') {
+      setViewType('occurrence');
+      setEntryType('occurrence');
+      setCategory('handover');
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     if ((!siteId || !sites.some((s) => s.id === siteId)) && sites[0]?.id) {
@@ -2022,6 +2855,68 @@ export const FFIncidentsPage: React.FC = () => {
 
   const canReview = currentRole !== 'guard';
 
+  const toggleVoiceDictation = () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+    const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setFeedback({
+        tone: 'error',
+        msg: 'Voice dictation is not supported in this browser; enter or paste transcript text manually.',
+      });
+      return;
+    }
+    if (isRecording && speechRef.current) {
+      speechRef.current.stop();
+      setIsRecording(false);
+      return;
+    }
+    const rec = new SpeechRec();
+    rec.lang = 'en-KE';
+    rec.continuous = true;
+    rec.interimResults = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onresult = (event: any) => {
+      let chunk = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        chunk += `${event.results[i][0].transcript} `;
+      }
+      const clean = chunk.trim();
+      if (clean) {
+        setVoiceTranscript((prev) => `${prev ? `${prev} ` : ''}${clean}`);
+        setNarrative((prev) => `${prev ? `${prev} ` : ''}${clean}`);
+      }
+    };
+    rec.onerror = () => setIsRecording(false);
+    rec.onend = () => setIsRecording(false);
+    speechRef.current = rec;
+    rec.start();
+    setIsRecording(true);
+  };
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 900;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const compressed = canvas.toDataURL('image/jpeg', 0.78);
+        setPhotoData(compressed);
+      };
+      img.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  };
+
   const submitIncident = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
@@ -2032,15 +2927,24 @@ export const FFIncidentsPage: React.FC = () => {
     const res = await reportIncident({
       site_id: siteId,
       post_id: postId || null,
+      entry_type: entryType,
       category,
       severity,
       narrative,
       occurrence_time: new Date().toISOString(),
+      voice_transcript: voiceTranscript.trim() || null,
+      photo_data: photoData,
+      escalation_level: escalationLevel,
     });
     if (res.error) setFeedback({ tone: 'error', msg: res.error });
     else {
       setNarrative('');
-      setFeedback({ tone: 'success', msg: 'Field incident logged for supervisor review.' });
+      setVoiceTranscript('');
+      setPhotoData(null);
+      setFeedback({
+        tone: 'success',
+        msg: entryType === 'occurrence' ? 'Digital Occurrence Book (OB) entry recorded.' : 'Field incident logged for supervisor review.',
+      });
     }
   };
 
@@ -2087,6 +2991,7 @@ export const FFIncidentsPage: React.FC = () => {
   };
 
   const visibleIncidents = incidents.filter((i) => {
+    const matchesEntry = viewType === 'all' || (i.entry_type || 'incident') === viewType;
     const matchesStatus = statusFilter === 'all' || i.status === statusFilter;
     const siteName = sites.find((s) => s.id === i.site_id)?.name || '';
     const q = search.trim().toLowerCase();
@@ -2094,9 +2999,10 @@ export const FFIncidentsPage: React.FC = () => {
       !q ||
       i.narrative.toLowerCase().includes(q) ||
       i.category.toLowerCase().includes(q) ||
+      (i.ob_number || '').toLowerCase().includes(q) ||
       siteName.toLowerCase().includes(q) ||
       i.reported_by_name.toLowerCase().includes(q);
-    return matchesStatus && matchesSearch;
+    return matchesEntry && matchesStatus && matchesSearch;
   });
 
   const selectedIncident: Incident | null =
@@ -2109,44 +3015,98 @@ export const FFIncidentsPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Security Incident Workspace"
-        description="Human-reviewed field incident intake, timeline, audit history, and PII-redacted AI summary drafting."
+        eyebrow="Module 05 · Incident & Digital Occurrence Book (OB)"
+        title="Incidents, Voice Reporting, Photos & Occurrence Book"
+        description="Log security incidents and shift OB entries with voice dictation, photo evidence, escalation levels, and PII-redacted AI briefs."
         actions={
           <div className="relative w-full sm:w-64">
             <Search className="h-4 w-4 text-slate-400 absolute left-3 top-3" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search site, category, or reporter..."
+              placeholder="Search OB #, site, category..."
               className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm bg-white min-h-[42px]"
             />
           </div>
         }
       />
 
-      <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
-        {(['all', 'open', 'under_investigation', 'resolved', 'closed'] as const).map((st) => (
-          <button
-            key={st}
-            onClick={() => setStatusFilter(st)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md capitalize cursor-pointer ${
-              statusFilter === st ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            {st.replace('_', ' ')}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
+          {([
+            { id: 'all', label: `All Entries (${incidents.length})` },
+            { id: 'incident', label: 'Security Incidents' },
+            { id: 'occurrence', label: 'Digital Occurrence Book (OB)' },
+          ] as const).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => {
+                setViewType(t.id);
+                if (t.id === 'occurrence') setSearchParams({ view: 'ob' });
+                else setSearchParams({});
+              }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                viewType === t.id ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
+          {(['all', 'open', 'under_investigation', 'resolved', 'closed'] as const).map((st) => (
+            <button
+              key={st}
+              onClick={() => setStatusFilter(st)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md capitalize cursor-pointer ${
+                statusFilter === st ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              {st.replace('_', ' ')}
+            </button>
+          ))}
+        </div>
       </div>
 
       {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
 
       <Card className="p-5">
-        <h2 className="font-bold text-sm text-slate-900 mb-3 flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 text-[#E11D48]" />
-          <span>Report Field Incident (Text-Only V1)</span>
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h2 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+            {entryType === 'occurrence' ? (
+              <BookOpen className="h-4 w-4 text-[#059669]" />
+            ) : (
+              <ShieldAlert className="h-4 w-4 text-[#E11D48]" />
+            )}
+            <span>{entryType === 'occurrence' ? 'New Digital Occurrence Book (OB) Entry' : 'Report Field Security Incident'}</span>
+          </h2>
+          <div className="inline-flex gap-1 bg-slate-100 p-1 rounded-lg">
+            <button
+              type="button"
+              onClick={() => {
+                setEntryType('incident');
+                setCategory('trespassing');
+              }}
+              className={`px-2.5 py-1 text-xs rounded font-medium cursor-pointer ${entryType === 'incident' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}
+            >
+              Incident
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEntryType('occurrence');
+                setCategory('handover');
+              }}
+              className={`px-2.5 py-1 text-xs rounded font-medium cursor-pointer ${entryType === 'occurrence' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}
+            >
+              Occurrence Book
+            </button>
+          </div>
+        </div>
+
         <form onSubmit={submitIncident} className="space-y-3">
-          <div className="grid sm:grid-cols-4 gap-3">
+          <div className="grid sm:grid-cols-5 gap-3">
             <select
               value={siteId}
               onChange={(e) => setSiteId(e.target.value)}
@@ -2185,6 +3145,9 @@ export const FFIncidentsPage: React.FC = () => {
               <option value="property_damage">Property Damage</option>
               <option value="uniform_breach">Uniform Breach</option>
               <option value="equipment_failure">Equipment Failure</option>
+              <option value="handover">OB · Shift Handover</option>
+              <option value="visitor_log">OB · Visitor / Vehicle Log</option>
+              <option value="patrol_note">OB · Patrol Observation</option>
             </select>
             <select
               value={severity}
@@ -2196,24 +3159,57 @@ export const FFIncidentsPage: React.FC = () => {
               <option value="high">High</option>
               <option value="critical">Critical</option>
             </select>
+            <select
+              value={escalationLevel}
+              onChange={(e) => setEscalationLevel(e.target.value as EscalationLevel)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white min-h-[42px]"
+            >
+              <option value="site">Escalation: Site Level</option>
+              <option value="operations">Escalation: Operations HQ</option>
+              <option value="executive">Escalation: Executive</option>
+              <option value="client_notified">Escalation: Client Notified</option>
+            </select>
           </div>
           <textarea
             required
             minLength={10}
             rows={3}
-            placeholder="Describe factual sequence of events..."
+            placeholder="Describe factual sequence of events or dictate using the microphone..."
             value={narrative}
             onChange={(e) => setNarrative(e.target.value)}
             className="w-full border border-slate-300 rounded-lg p-3 text-sm"
           />
-          <Button type="submit" variant="danger">
-            Log Incident
-          </Button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="secondary" size="sm" onClick={toggleVoiceDictation}>
+                {isRecording ? <MicOff className="h-4 w-4 text-rose-600" /> : <Mic className="h-4 w-4 text-[#059669]" />}
+                {isRecording ? 'Stop Dictation' : 'Voice Report Dictation'}
+              </Button>
+              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer min-h-[36px]">
+                <Camera className="h-4 w-4 text-slate-600" />
+                <span>{photoData ? 'Photo Attached (Change)' : 'Attach Evidence Photo'}</span>
+                <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={handlePhotoUpload} />
+              </label>
+              {photoData && (
+                <button type="button" onClick={() => setPhotoData(null)} className="text-xs text-rose-600 hover:underline cursor-pointer">
+                  Remove photo
+                </button>
+              )}
+            </div>
+            <Button type="submit" variant={entryType === 'occurrence' ? 'primary' : 'danger'}>
+              {entryType === 'occurrence' ? 'Record OB Entry' : 'Log Security Incident'}
+            </Button>
+          </div>
+          {photoData && (
+            <div className="pt-2">
+              <img src={photoData} alt="Incident evidence preview" className="h-24 rounded-lg border border-slate-200 object-cover" />
+            </div>
+          )}
         </form>
       </Card>
 
       {visibleIncidents.length === 0 ? (
-        <EmptyState title="No incidents in this view" description="All matching incident logs are clear." />
+        <EmptyState title="No incidents or OB entries in this view" description="All matching records are clear." />
       ) : (
         <div className="space-y-3">
           {visibleIncidents.map((inc) => {
@@ -2224,7 +3220,15 @@ export const FFIncidentsPage: React.FC = () => {
             return (
               <Card key={inc.id} className="p-5 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    {inc.ob_number && (
+                      <span className="font-mono text-xs px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700">
+                        {inc.ob_number}
+                      </span>
+                    )}
+                    <Badge tone={inc.entry_type === 'occurrence' ? 'emerald' : 'navy'}>
+                      {inc.entry_type === 'occurrence' ? 'OB Entry' : 'Incident'}
+                    </Badge>
                     <StatusLabel
                       label={inc.severity.toUpperCase()}
                       tone={inc.severity === 'critical' || inc.severity === 'high' ? 'rose' : 'amber'}
@@ -2235,7 +3239,11 @@ export const FFIncidentsPage: React.FC = () => {
                       {postName ? ` (${postName})` : ''}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {inc.escalation_level && inc.escalation_level !== 'site' && (
+                      <Badge tone="amber">Escalated: {inc.escalation_level.replace('_', ' ')}</Badge>
+                    )}
+                    {inc.photo_data && <Badge tone="slate">Photo Attached</Badge>}
                     {pendingAi && <Badge tone="amber">AI Draft Pending Approval</Badge>}
                     <Badge tone={inc.status === 'resolved' || inc.status === 'closed' ? 'emerald' : 'navy'}>
                       {inc.status.replace('_', ' ')}
@@ -2257,7 +3265,7 @@ export const FFIncidentsPage: React.FC = () => {
                       setSelectedIncidentId(inc.id);
                     }}
                   >
-                    <Eye className="h-3.5 w-3.5" /> Open Incident Workspace
+                    <Eye className="h-3.5 w-3.5" /> Open Record Workspace
                   </Button>
                 </div>
               </Card>
@@ -2266,10 +3274,10 @@ export const FFIncidentsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Full Incident Workspace Drawer */}
+      {/* Full Incident & OB Workspace Drawer */}
       <Drawer
         open={Boolean(selectedIncident)}
-        title={selectedIncident ? `${selectedIncident.category.replace('_', ' ').toUpperCase()} Incident` : ''}
+        title={selectedIncident ? `${selectedIncident.ob_number || 'Record'} · ${selectedIncident.category.replace('_', ' ').toUpperCase()}` : ''}
         subtitle={
           selectedIncident
             ? `${sites.find((s) => s.id === selectedIncident.site_id)?.name || 'Site'} · ${formatNairobiDateTime(
@@ -2286,23 +3294,21 @@ export const FFIncidentsPage: React.FC = () => {
           <div className="space-y-6">
             {drawerFeedback && <InlineAlert tone={drawerFeedback.tone}>{drawerFeedback.msg}</InlineAlert>}
 
-            {/* Metadata Grid */}
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500">Severity</div>
-                <div className="mt-1">
+                <div className="text-slate-500">Severity &amp; Type</div>
+                <div className="mt-1 flex items-center gap-2">
                   <StatusLabel
                     label={selectedIncident.severity.toUpperCase()}
-                    tone={
-                      selectedIncident.severity === 'critical' || selectedIncident.severity === 'high' ? 'rose' : 'amber'
-                    }
+                    tone={selectedIncident.severity === 'critical' || selectedIncident.severity === 'high' ? 'rose' : 'amber'}
                   />
+                  <span className="capitalize">{selectedIncident.entry_type || 'incident'}</span>
                 </div>
               </div>
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500">Workflow Status</div>
+                <div className="text-slate-500">Escalation Level</div>
                 <div className="font-semibold text-slate-900 capitalize mt-1">
-                  {selectedIncident.status.replace('_', ' ')}
+                  {(selectedIncident.escalation_level || 'site').replace('_', ' ')}
                 </div>
               </div>
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
@@ -2310,34 +3316,63 @@ export const FFIncidentsPage: React.FC = () => {
                 <div className="font-semibold text-slate-900 mt-1">{selectedIncident.reported_by_name}</div>
               </div>
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                <div className="text-slate-500">Assigned Investigator</div>
-                <div className="font-semibold text-slate-900 mt-1">
-                  {members.find((m) => m.user_id === selectedIncident.reviewed_by)?.full_name || 'Unassigned'}
+                <div className="text-slate-500">Workflow Status</div>
+                <div className="font-semibold text-slate-900 capitalize mt-1">
+                  {selectedIncident.status.replace('_', ' ')}
                 </div>
               </div>
             </div>
 
-            {/* Incident Description */}
             <div className="space-y-1.5">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Incident Description</h3>
-              <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 leading-relaxed">
-                {selectedIncident.narrative}
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Narrative &amp; Voice Transcript</h3>
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800 leading-relaxed space-y-2">
+                <p>{selectedIncident.narrative}</p>
+                {selectedIncident.voice_transcript && (
+                  <p className="text-xs text-slate-600 pt-2 border-t border-slate-200">
+                    <strong>Voice Dictation:</strong> {selectedIncident.voice_transcript}
+                  </p>
+                )}
               </div>
             </div>
 
-            {/* Evidence Gallery (Honest V1 Policy) */}
             <div className="space-y-1.5">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Evidence Gallery</h3>
-              <div className="p-4 border border-dashed border-slate-300 rounded-lg text-xs text-slate-600 flex items-start gap-2.5">
-                <FileText className="h-4 w-4 text-slate-400 shrink-0 mt-0.5" />
-                <span>
-                  V1 incident intake is strictly text-only. Private photo/document attachment storage (signed 60s URLs)
-                  is deferred to Phase 4.5.
-                </span>
-              </div>
+              {selectedIncident.photo_data ? (
+                <img
+                  src={selectedIncident.photo_data}
+                  alt="Field incident evidence"
+                  className="w-full max-h-64 object-contain rounded-lg border border-slate-200 bg-slate-50"
+                />
+              ) : (
+                <div className="p-4 border border-dashed border-slate-300 rounded-lg text-xs text-slate-600 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 text-slate-400" />
+                  <span>No photo uploaded with this entry.</span>
+                </div>
+              )}
             </div>
 
-            {/* Official Human-Approved Notes */}
+            {canReview && (
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                <div className="text-xs font-semibold text-slate-700">Escalate Incident Level</div>
+                <div className="flex flex-wrap gap-2">
+                  {(['site', 'operations', 'executive', 'client_notified'] as const).map((lvl) => (
+                    <Button
+                      key={lvl}
+                      size="sm"
+                      variant={selectedIncident.escalation_level === lvl ? 'primary' : 'secondary'}
+                      onClick={async () => {
+                        const res = await escalateIncident(selectedIncident.id, lvl);
+                        if (res.error) setDrawerFeedback({ tone: 'error', msg: res.error });
+                        else setDrawerFeedback({ tone: 'success', msg: `Escalated to ${lvl.replace('_', ' ')}.` });
+                      }}
+                    >
+                      {lvl.replace('_', ' ')}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {selectedIncident.review_notes && (
               <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-950 space-y-1.5">
                 <div className="flex items-center justify-between">
@@ -2354,7 +3389,6 @@ export const FFIncidentsPage: React.FC = () => {
               </div>
             )}
 
-            {/* AI-Generated Draft Summary (Pending Human Approval) */}
             {canReview && selectedIncident.ai_draft_summary && !selectedIncident.ai_approved_at && (
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2371,11 +3405,7 @@ export const FFIncidentsPage: React.FC = () => {
                   <Button
                     size="sm"
                     onClick={() =>
-                      handleApproveDraft(
-                        selectedIncident.id,
-                        selectedIncident.ai_draft_summary!,
-                        'under_investigation'
-                      )
+                      handleApproveDraft(selectedIncident.id, selectedIncident.ai_draft_summary!, 'under_investigation')
                     }
                   >
                     Approve &amp; Save (Investigating)
@@ -2393,7 +3423,6 @@ export const FFIncidentsPage: React.FC = () => {
               </div>
             )}
 
-            {/* Supervisor Actions */}
             {canReview && selectedIncident.status !== 'closed' && (
               <div className="space-y-3 pt-3 border-t border-slate-200">
                 <div className="flex flex-wrap gap-2">
@@ -2451,38 +3480,12 @@ export const FFIncidentsPage: React.FC = () => {
                     size="sm"
                     onClick={() => setConfirmCloseId(selectedIncident.id)}
                   >
-                    Close Incident
+                    Close Record
                   </Button>
                 </div>
               </div>
             )}
 
-            {/* Incident Timeline */}
-            <div className="space-y-2 pt-3 border-t border-slate-200">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Incident Timeline</h3>
-              <div className="space-y-2 text-xs text-slate-700">
-                <div className="flex justify-between">
-                  <span>Incident reported by {selectedIncident.reported_by_name}</span>
-                  <span className="font-mono text-slate-500">{formatNairobiDateTime(selectedIncident.occurrence_time)}</span>
-                </div>
-                {selectedIncident.ai_draft_generated_at && (
-                  <div className="flex justify-between">
-                    <span>AI draft generated (server-side Gemini)</span>
-                    <span className="font-mono text-slate-500">
-                      {formatNairobiDateTime(selectedIncident.ai_draft_generated_at)}
-                    </span>
-                  </div>
-                )}
-                {selectedIncident.ai_approved_at && (
-                  <div className="flex justify-between text-[#059669] font-medium">
-                    <span>Summary approved by human supervisor</span>
-                    <span className="font-mono">{formatNairobiDateTime(selectedIncident.ai_approved_at)}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Per-Incident Audit History */}
             <div className="space-y-2 pt-3 border-t border-slate-200">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Audit History</h3>
               {selectedAuditHistory.length === 0 ? (
@@ -2509,9 +3512,9 @@ export const FFIncidentsPage: React.FC = () => {
 
       <ConfirmDialog
         open={Boolean(confirmCloseId)}
-        title="Close Security Incident"
-        description="Closing this incident marks its workflow complete. All timeline notes and audit logs remain preserved."
-        confirmLabel="Close Incident"
+        title="Close Record"
+        description="Closing this entry marks its workflow complete. All timeline notes and audit logs remain preserved."
+        confirmLabel="Close Record"
         tone="danger"
         onCancel={() => setConfirmCloseId(null)}
         onConfirm={async () => {

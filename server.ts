@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
-import { db, initDatabase, writeAuditEvent } from './server/db.ts';
+import { db, dbPath, initDatabase, writeAuditEvent } from './server/db.ts';
 import {
   hasRole,
   hashPassword,
@@ -15,11 +15,12 @@ import {
   verifyPassword,
   type OrgRole,
 } from './server/auth.ts';
+import { fieldforceRouter, haversineMeters, validatePhotoData } from './server/fieldforceRoutes.ts';
 
 initDatabase();
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
 
 const DEMO_ROLE_USER_MAP: Record<OrgRole, string> = {
   owner: 'usr-demo-owner',
@@ -29,6 +30,7 @@ const DEMO_ROLE_USER_MAP: Record<OrgRole, string> = {
   supervisor: 'usr-demo-sup',
   guard: 'usr-demo-guard',
   finance_manager: 'usr-demo-owner',
+  client: 'usr-demo-client',
 };
 
 function getGeminiClient(): GoogleGenAI {
@@ -157,7 +159,7 @@ app.post('/api/auth/login', (req, res) => {
 
 app.post('/api/auth/demo-session', (req, res) => {
   const requestedRole = (req.body?.role as OrgRole) || 'owner';
-  const validRoles: OrgRole[] = ['owner', 'admin', 'operations_manager', 'hr_manager', 'supervisor', 'guard', 'finance_manager'];
+  const validRoles: OrgRole[] = ['owner', 'admin', 'operations_manager', 'hr_manager', 'supervisor', 'guard', 'finance_manager', 'client'];
   const role: OrgRole = validRoles.includes(requestedRole) ? requestedRole : 'owner';
   const userId = DEMO_ROLE_USER_MAP[role];
   const orgId = 'org-nairobi-001';
@@ -484,11 +486,11 @@ app.post('/api/entitlements/waitlist', requireAuth, requireOrg, (req, res) => {
 });
 
 app.get('/api/members', requireAuth, requireOrg, (req, res) => {
-  const isGuard = req.auth!.role === 'guard';
-  const rows = isGuard
+  const isRestricted = req.auth!.role === 'guard' || req.auth!.role === 'client';
+  const rows = isRestricted
     ? db
         .prepare(`
-          SELECT m.id, m.organization_id, m.user_id, m.role, m.status, u.full_name, u.email
+          SELECT m.id, m.organization_id, m.user_id, m.role, m.client_id, m.status, u.full_name, u.email
           FROM organization_memberships m
           JOIN users u ON u.id = m.user_id
           WHERE m.organization_id = ? AND m.user_id = ?
@@ -496,7 +498,7 @@ app.get('/api/members', requireAuth, requireOrg, (req, res) => {
         .all(req.auth!.orgId, req.auth!.userId)
     : db
         .prepare(`
-          SELECT m.id, m.organization_id, m.user_id, m.role, m.status, u.full_name, u.email
+          SELECT m.id, m.organization_id, m.user_id, m.role, m.client_id, m.status, u.full_name, u.email
           FROM organization_memberships m
           JOIN users u ON u.id = m.user_id
           WHERE m.organization_id = ?
@@ -515,7 +517,8 @@ app.post('/api/members', requireAuth, requireOrg, (req, res) => {
   const schema = z.object({
     fullName: z.string().trim().min(2),
     email: z.string().trim().email(),
-    role: z.enum(['owner', 'admin', 'operations_manager', 'hr_manager', 'supervisor', 'guard', 'finance_manager']),
+    role: z.enum(['owner', 'admin', 'operations_manager', 'hr_manager', 'supervisor', 'guard', 'finance_manager', 'client']),
+    client_id: z.string().nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -550,9 +553,9 @@ app.post('/api/members', requireAuth, requireOrg, (req, res) => {
 
   const memId = `mem-${crypto.randomUUID().slice(0, 12)}`;
   db.prepare(`
-    INSERT INTO organization_memberships (id, organization_id, user_id, role, status)
-    VALUES (?, ?, ?, ?, 'active')
-  `).run(memId, req.auth!.orgId, user.id, parsed.data.role);
+    INSERT INTO organization_memberships (id, organization_id, user_id, role, client_id, status)
+    VALUES (?, ?, ?, ?, ?, 'active')
+  `).run(memId, req.auth!.orgId, user.id, parsed.data.role, parsed.data.client_id ?? null);
 
   writeAuditEvent({
     organizationId: req.auth!.orgId!,
@@ -572,6 +575,7 @@ app.post('/api/members', requireAuth, requireOrg, (req, res) => {
       full_name: user.full_name,
       email: user.email,
       role: parsed.data.role,
+      client_id: parsed.data.client_id ?? null,
       status: 'active',
     },
   });
@@ -583,7 +587,8 @@ app.patch('/api/members/:id/role', requireAuth, requireOrg, (req, res) => {
     return;
   }
   const schema = z.object({
-    role: z.enum(['owner', 'admin', 'operations_manager', 'hr_manager', 'supervisor', 'guard', 'finance_manager']),
+    role: z.enum(['owner', 'admin', 'operations_manager', 'hr_manager', 'supervisor', 'guard', 'finance_manager', 'client']),
+    client_id: z.string().nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -599,8 +604,9 @@ app.patch('/api/members/:id/role', requireAuth, requireOrg, (req, res) => {
     return;
   }
 
-  db.prepare("UPDATE organization_memberships SET role = ?, updated_at = datetime('now') WHERE id = ?").run(
+  db.prepare("UPDATE organization_memberships SET role = ?, client_id = COALESCE(?, client_id), updated_at = datetime('now') WHERE id = ?").run(
     parsed.data.role,
+    parsed.data.client_id === undefined ? null : parsed.data.client_id,
     target.id
   );
 
@@ -646,10 +652,13 @@ app.get('/api/audit-events', requireAuth, requireOrg, (req, res) => {
 
 // ==================== FIELDFORCE BOOTSTRAP & MASTER DATA ====================
 
+app.use('/api/fieldforce', requireAuth, requireOrg, fieldforceRouter);
+
 app.get('/api/fieldforce/bootstrap', requireAuth, requireOrg, (req, res) => {
   const orgId = req.auth!.orgId!;
   const role = req.auth!.role!;
   const userId = req.auth!.userId;
+  const clientIdScope = req.auth!.clientId ?? null;
 
   let employees = db
     .prepare('SELECT * FROM ff_employees WHERE organization_id = ? ORDER BY created_at DESC')
@@ -663,7 +672,7 @@ app.get('/api/fieldforce/bootstrap', requireAuth, requireOrg, (req, res) => {
     .prepare('SELECT * FROM ff_sites WHERE organization_id = ? ORDER BY created_at DESC')
     .all(orgId) as Array<Record<string, unknown>>;
 
-  const posts = db
+  let posts = db
     .prepare('SELECT * FROM ff_posts WHERE organization_id = ? ORDER BY created_at ASC')
     .all(orgId) as Array<Record<string, unknown>>;
 
@@ -687,8 +696,51 @@ app.get('/api/fieldforce/bootstrap', requireAuth, requireOrg, (req, res) => {
     .prepare('SELECT * FROM ff_incidents WHERE organization_id = ? ORDER BY occurrence_time DESC')
     .all(orgId) as Array<Record<string, unknown>>;
 
-  // Enforce role-scoped data isolation per RLS matrix (Section 8)
-  if (role === 'guard') {
+  let contracts = db.prepare('SELECT * FROM ff_employee_contracts WHERE organization_id = ? ORDER BY start_date DESC').all(orgId) as Array<Record<string, unknown>>;
+  let documents = db.prepare('SELECT * FROM ff_employee_documents WHERE organization_id = ? ORDER BY expiry_date ASC').all(orgId) as Array<Record<string, unknown>>;
+  let qualifications = db.prepare('SELECT * FROM ff_employee_qualifications WHERE organization_id = ? ORDER BY achieved_date DESC').all(orgId) as Array<Record<string, unknown>>;
+  let leaveRecords = db.prepare('SELECT * FROM ff_leave_records WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as Array<Record<string, unknown>>;
+  let disciplinaryRecords = db.prepare('SELECT * FROM ff_disciplinary_records WHERE organization_id = ? ORDER BY incident_date DESC').all(orgId) as Array<Record<string, unknown>>;
+  let attendanceVerifications = db.prepare('SELECT * FROM ff_attendance_verifications WHERE organization_id = ?').all(orgId) as Array<Record<string, unknown>>;
+  let patrolCheckpoints = db.prepare('SELECT * FROM ff_patrol_checkpoints WHERE organization_id = ? ORDER BY sequence_order ASC').all(orgId) as Array<Record<string, unknown>>;
+  let patrolSchedules = db.prepare('SELECT * FROM ff_patrol_schedules WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as Array<Record<string, unknown>>;
+  let patrolScans = db.prepare('SELECT * FROM ff_patrol_scans WHERE organization_id = ? ORDER BY scanned_at DESC').all(orgId) as Array<Record<string, unknown>>;
+  let payrollRuns = db.prepare('SELECT * FROM ff_payroll_runs WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as Array<Record<string, unknown>>;
+  let payslips = db.prepare('SELECT * FROM ff_payslips WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as Array<Record<string, unknown>>;
+  let clientContracts = db.prepare('SELECT * FROM ff_client_contracts WHERE organization_id = ? ORDER BY start_date DESC').all(orgId) as Array<Record<string, unknown>>;
+  let invoices = db.prepare('SELECT * FROM ff_invoices WHERE organization_id = ? ORDER BY issue_date DESC').all(orgId) as Array<Record<string, unknown>>;
+  let receipts = db.prepare('SELECT * FROM ff_receipts WHERE organization_id = ? ORDER BY received_at DESC').all(orgId) as Array<Record<string, unknown>>;
+  let expenses = db.prepare('SELECT * FROM ff_expenses WHERE organization_id = ? ORDER BY expense_date DESC').all(orgId) as Array<Record<string, unknown>>;
+
+  // Enforce role-scoped data isolation per RLS matrix
+  if (role === 'client') {
+    clients = clientIdScope ? clients.filter((c) => c.id === clientIdScope) : [];
+    const allowedClientIds = new Set(clients.map((c) => c.id));
+    sites = sites.filter((s) => allowedClientIds.has(s.client_id));
+    const allowedSiteIds = new Set(sites.map((s) => s.id));
+    posts = posts.filter((p) => allowedSiteIds.has(p.site_id));
+    shifts = shifts.filter((s) => allowedSiteIds.has(s.site_id));
+    const allowedShiftIds = new Set(shifts.map((s) => s.id));
+    assignments = assignments.filter((a) => allowedShiftIds.has(a.shift_id));
+    attendance = attendance.filter((a) => a.shift_id && allowedShiftIds.has(a.shift_id));
+    incidents = incidents.filter((i) => allowedSiteIds.has(i.site_id));
+    patrolCheckpoints = patrolCheckpoints.filter((cp) => allowedSiteIds.has(cp.site_id));
+    patrolSchedules = patrolSchedules.filter((ps) => allowedSiteIds.has(ps.site_id));
+    patrolScans = patrolScans.filter((ps) => allowedSiteIds.has(ps.site_id));
+    clientContracts = clientContracts.filter((cc) => allowedClientIds.has(cc.client_id));
+    invoices = invoices.filter((inv) => allowedClientIds.has(inv.client_id));
+    receipts = receipts.filter((rcp) => allowedClientIds.has(rcp.client_id));
+    employees = [];
+    contracts = [];
+    documents = [];
+    qualifications = [];
+    leaveRecords = [];
+    disciplinaryRecords = [];
+    attendanceVerifications = [];
+    payrollRuns = [];
+    payslips = [];
+    expenses = [];
+  } else if (role === 'guard') {
     const myEmpIds = new Set(employees.filter((e) => e.user_id === userId).map((e) => e.id));
     employees = employees.filter((e) => myEmpIds.has(e.id));
     assignments = assignments.filter((a) => myEmpIds.has(a.employee_id));
@@ -696,22 +748,48 @@ app.get('/api/fieldforce/bootstrap', requireAuth, requireOrg, (req, res) => {
     shifts = shifts.filter((s) => myShiftIds.has(s.id));
     const mySiteIds = new Set(shifts.map((s) => s.site_id));
     sites = sites.filter((s) => mySiteIds.has(s.id));
+    posts = posts.filter((p) => mySiteIds.has(p.site_id));
     const myClientIds = new Set(sites.map((s) => s.client_id));
     clients = clients.filter((c) => myClientIds.has(c.id));
     attendance = attendance.filter((a) => myEmpIds.has(a.employee_id));
+    const attIds = new Set(attendance.map((a) => a.id));
+    attendanceVerifications = attendanceVerifications.filter((v) => attIds.has(v.attendance_event_id));
     incidents = incidents.filter((i) => i.reported_by === userId);
+    contracts = contracts.filter((c) => myEmpIds.has(c.employee_id));
+    documents = documents.filter((d) => myEmpIds.has(d.employee_id));
+    qualifications = qualifications.filter((q) => myEmpIds.has(q.employee_id));
+    leaveRecords = leaveRecords.filter((l) => myEmpIds.has(l.employee_id));
+    disciplinaryRecords = disciplinaryRecords.filter((d) => myEmpIds.has(d.employee_id));
+    patrolCheckpoints = patrolCheckpoints.filter((cp) => mySiteIds.has(cp.site_id));
+    patrolSchedules = patrolSchedules.filter((ps) => mySiteIds.has(ps.site_id));
+    patrolScans = patrolScans.filter((ps) => myEmpIds.has(ps.employee_id) || mySiteIds.has(ps.site_id));
+    payslips = payslips.filter((ps) => myEmpIds.has(ps.employee_id));
+    payrollRuns = [];
+    clientContracts = [];
+    invoices = [];
+    receipts = [];
+    expenses = [];
   } else if (role === 'supervisor') {
     const assignedSites = siteSupervisors.filter((ss) => ss.user_id === userId).map((ss) => ss.site_id);
     if (assignedSites.length > 0) {
       const siteSet = new Set(assignedSites);
       sites = sites.filter((s) => siteSet.has(String(s.id)));
+      posts = posts.filter((p) => siteSet.has(String(p.site_id)));
       shifts = shifts.filter((s) => siteSet.has(String(s.site_id)));
       const shiftSet = new Set(shifts.map((s) => s.id));
       assignments = assignments.filter((a) => shiftSet.has(a.shift_id));
       const empSet = new Set(assignments.map((a) => a.employee_id));
       attendance = attendance.filter((a) => (a.shift_id ? shiftSet.has(a.shift_id) : empSet.has(a.employee_id)));
       incidents = incidents.filter((i) => siteSet.has(String(i.site_id)));
+      patrolCheckpoints = patrolCheckpoints.filter((cp) => siteSet.has(String(cp.site_id)));
+      patrolSchedules = patrolSchedules.filter((ps) => siteSet.has(String(ps.site_id)));
+      patrolScans = patrolScans.filter((ps) => siteSet.has(String(ps.site_id)));
     }
+    payrollRuns = [];
+    payslips = [];
+    clientContracts = [];
+    invoices = [];
+    receipts = [];
   }
 
   res.json({
@@ -721,12 +799,31 @@ app.get('/api/fieldforce/bootstrap', requireAuth, requireOrg, (req, res) => {
     posts,
     siteSupervisors,
     shifts,
-    assignments,
+    assignments: assignments.map((a) => ({ ...a, is_relief: Boolean(a.is_relief) })),
     attendance: attendance.map((a) => ({
       ...a,
+      is_offline_sync: Boolean(a.is_offline_sync),
       location_metadata: a.location_metadata ? JSON.parse(String(a.location_metadata)) : null,
     })),
     incidents,
+    contracts,
+    documents,
+    qualifications,
+    leaveRecords,
+    disciplinaryRecords,
+    attendanceVerifications,
+    patrolCheckpoints: patrolCheckpoints.map((cp) => ({ ...cp, is_active: Boolean(cp.is_active) })),
+    patrolSchedules: patrolSchedules.map((ps) => ({ ...ps, is_active: Boolean(ps.is_active) })),
+    patrolScans,
+    payrollRuns,
+    payslips,
+    clientContracts,
+    invoices: invoices.map((inv) => ({
+      ...inv,
+      line_items: inv.line_items_json ? JSON.parse(String(inv.line_items_json)) : [],
+    })),
+    receipts,
+    expenses,
   });
 });
 
@@ -984,6 +1081,9 @@ app.post('/api/fieldforce/sites', requireAuth, requireOrg, (req, res) => {
     name: z.string().trim().min(2).max(140),
     location_description: z.string().trim().max(240).optional(),
     city: z.string().trim().min(2).max(80).default('Nairobi'),
+    latitude: z.number().min(-90).max(90).nullable().optional(),
+    longitude: z.number().min(-180).max(180).nullable().optional(),
+    geofence_radius_m: z.number().int().min(30).max(5000).default(250),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -1001,9 +1101,19 @@ app.post('/api/fieldforce/sites', requireAuth, requireOrg, (req, res) => {
 
   const id = `site-${crypto.randomUUID().slice(0, 12)}`;
   db.prepare(`
-    INSERT INTO ff_sites (id, organization_id, client_id, name, location_description, city, is_active)
-    VALUES (?, ?, ?, ?, ?, ?, 1)
-  `).run(id, req.auth!.orgId, parsed.data.client_id, parsed.data.name, parsed.data.location_description ?? '', parsed.data.city);
+    INSERT INTO ff_sites (id, organization_id, client_id, name, location_description, city, latitude, longitude, geofence_radius_m, is_active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+  `).run(
+    id,
+    req.auth!.orgId,
+    parsed.data.client_id,
+    parsed.data.name,
+    parsed.data.location_description ?? '',
+    parsed.data.city,
+    parsed.data.latitude ?? null,
+    parsed.data.longitude ?? null,
+    parsed.data.geofence_radius_m
+  );
 
   writeAuditEvent({
     organizationId: req.auth!.orgId!,
@@ -1272,7 +1382,12 @@ app.post('/api/fieldforce/assignments', requireAuth, requireOrg, (req, res) => {
     res.status(403).json({ error: 'Insufficient permissions to assign guards.' });
     return;
   }
-  const schema = z.object({ shift_id: z.string().min(1), employee_id: z.string().min(1) });
+  const schema = z.object({
+    shift_id: z.string().min(1),
+    employee_id: z.string().min(1),
+    is_relief: z.boolean().default(false),
+    relief_for_assignment_id: z.string().nullable().optional(),
+  });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Shift and guard are required.' });
@@ -1321,22 +1436,30 @@ app.post('/api/fieldforce/assignments', requireAuth, requireOrg, (req, res) => {
 
   const id = `asg-${crypto.randomUUID().slice(0, 12)}`;
   db.prepare(`
-    INSERT INTO ff_assignments (id, organization_id, shift_id, employee_id, status, assigned_by)
-    VALUES (?, ?, ?, ?, 'scheduled', ?)
-  `).run(id, req.auth!.orgId, shift.id, emp.id, req.auth!.userId);
+    INSERT INTO ff_assignments (id, organization_id, shift_id, employee_id, status, is_relief, relief_for_assignment_id, assigned_by)
+    VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?)
+  `).run(
+    id,
+    req.auth!.orgId,
+    shift.id,
+    emp.id,
+    parsed.data.is_relief ? 1 : 0,
+    parsed.data.relief_for_assignment_id ?? null,
+    req.auth!.userId
+  );
 
   writeAuditEvent({
     organizationId: req.auth!.orgId!,
     actorId: req.auth!.userId,
     actorName: req.auth!.fullName,
-    action: 'assignment.created',
+    action: parsed.data.is_relief ? 'assignment.relief_created' : 'assignment.created',
     entityType: 'ff_assignments',
     entityId: id,
-    metadata: { shift_id: shift.id, employee_id: emp.id },
+    metadata: { shift_id: shift.id, employee_id: emp.id, is_relief: parsed.data.is_relief },
   });
 
-  const assignment = db.prepare('SELECT * FROM ff_assignments WHERE id = ?').get(id);
-  res.status(201).json({ assignment });
+  const assignment = db.prepare('SELECT * FROM ff_assignments WHERE id = ?').get(id) as Record<string, unknown>;
+  res.status(201).json({ assignment: { ...assignment, is_relief: Boolean(assignment.is_relief) } });
 });
 
 app.delete('/api/fieldforce/assignments/:id', requireAuth, requireOrg, (req, res) => {
@@ -1365,6 +1488,10 @@ app.delete('/api/fieldforce/assignments/:id', requireAuth, requireOrg, (req, res
 });
 
 app.post('/api/fieldforce/attendance', requireAuth, requireOrg, (req, res) => {
+  if (req.auth!.role === 'client') {
+    res.status(403).json({ error: 'Client portal accounts cannot record guard attendance.' });
+    return;
+  }
   const schema = z.object({
     employee_id: z.string().min(1),
     shift_id: z.string().nullable().optional(),
@@ -1378,6 +1505,8 @@ app.post('/api/fieldforce/attendance', requireAuth, requireOrg, (req, res) => {
       .nullable()
       .optional(),
     override_reason: z.string().trim().max(400).optional(),
+    offline_captured_at: z.string().nullable().optional(),
+    is_offline_sync: z.boolean().default(false),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
@@ -1416,12 +1545,53 @@ app.post('/api/fieldforce/attendance', requireAuth, requireOrg, (req, res) => {
   }
 
   const id = `att-${crypto.randomUUID().slice(0, 12)}`;
-  const recordedAt = new Date().toISOString();
+  const recordedAt =
+    parsed.data.is_offline_sync && parsed.data.offline_captured_at && !Number.isNaN(new Date(parsed.data.offline_captured_at).getTime())
+      ? new Date(parsed.data.offline_captured_at).toISOString()
+      : new Date().toISOString();
   const userAgent = String(req.headers['user-agent'] || 'web').slice(0, 80);
 
+  // Compute geofence status & lateness relative to referenced shift/site
+  let geofenceStatus = 'unknown';
+  let distanceMeters: number | null = null;
+  let lateMinutes = 0;
+
+  if (parsed.data.shift_id) {
+    const shiftSite = db
+      .prepare(`
+        SELECT sh.start_time, st.latitude, st.longitude, st.geofence_radius_m
+        FROM ff_shifts sh
+        JOIN ff_sites st ON st.id = sh.site_id
+        WHERE sh.id = ? AND sh.organization_id = ?
+      `)
+      .get(parsed.data.shift_id, req.auth!.orgId) as
+      | { start_time: string; latitude: number | null; longitude: number | null; geofence_radius_m: number }
+      | undefined;
+
+    if (shiftSite) {
+      if (parsed.data.location_metadata && shiftSite.latitude !== null && shiftSite.longitude !== null) {
+        distanceMeters = haversineMeters(
+          parsed.data.location_metadata.lat,
+          parsed.data.location_metadata.lng,
+          shiftSite.latitude,
+          shiftSite.longitude
+        );
+        geofenceStatus = distanceMeters <= (shiftSite.geofence_radius_m || 250) ? 'inside' : 'outside';
+      }
+      if (parsed.data.event_type === 'clock_in') {
+        const diffMin = Math.round((new Date(recordedAt).getTime() - new Date(shiftSite.start_time).getTime()) / 60_000);
+        lateMinutes = diffMin > 0 ? diffMin : 0;
+      }
+    }
+  }
+
   db.prepare(`
-    INSERT INTO ff_attendance_events (id, organization_id, employee_id, shift_id, event_type, recorded_at, source, location_metadata, supervisor_id, override_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ff_attendance_events (
+      id, organization_id, employee_id, shift_id, event_type, recorded_at, source,
+      location_metadata, geofence_status, distance_meters, late_minutes, offline_captured_at, is_offline_sync,
+      supervisor_id, override_reason
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     req.auth!.orgId,
@@ -1431,6 +1601,11 @@ app.post('/api/fieldforce/attendance', requireAuth, requireOrg, (req, res) => {
     recordedAt,
     userAgent,
     parsed.data.location_metadata ? JSON.stringify(parsed.data.location_metadata) : null,
+    geofenceStatus,
+    distanceMeters,
+    lateMinutes,
+    parsed.data.offline_captured_at ?? null,
+    parsed.data.is_offline_sync ? 1 : 0,
     parsed.data.event_type === 'supervisor_override' ? req.auth!.userId : null,
     parsed.data.override_reason ?? null
   );
@@ -1442,30 +1617,55 @@ app.post('/api/fieldforce/attendance', requireAuth, requireOrg, (req, res) => {
     action: `attendance.${parsed.data.event_type}`,
     entityType: 'ff_attendance_events',
     entityId: id,
-    metadata: { employee_id: emp.id },
+    metadata: { employee_id: emp.id, geofence_status: geofenceStatus, late_minutes: lateMinutes, is_offline_sync: parsed.data.is_offline_sync },
   });
 
   const eventRow = db.prepare('SELECT * FROM ff_attendance_events WHERE id = ?').get(id) as Record<string, unknown>;
   res.status(201).json({
     event: {
       ...eventRow,
+      is_offline_sync: Boolean(eventRow.is_offline_sync),
       location_metadata: eventRow.location_metadata ? JSON.parse(String(eventRow.location_metadata)) : null,
     },
   });
 });
 
 app.post('/api/fieldforce/incidents', requireAuth, requireOrg, (req, res) => {
+  if (req.auth!.role === 'client') {
+    res.status(403).json({ error: 'Client accounts cannot log internal field occurrence records.' });
+    return;
+  }
   const schema = z.object({
     site_id: z.string().min(1),
     post_id: z.string().nullable().optional(),
-    category: z.enum(['theft', 'trespassing', 'medical', 'property_damage', 'uniform_breach', 'equipment_failure']),
+    entry_type: z.enum(['incident', 'occurrence']).default('incident'),
+    category: z.enum([
+      'theft',
+      'trespassing',
+      'medical',
+      'property_damage',
+      'uniform_breach',
+      'equipment_failure',
+      'handover',
+      'visitor_log',
+      'patrol_note',
+    ]),
     severity: z.enum(['low', 'medium', 'high', 'critical']),
     narrative: z.string().trim().min(10).max(2000),
     occurrence_time: z.string().min(10),
+    voice_transcript: z.string().trim().max(2000).nullable().optional(),
+    photo_data: z.string().nullable().optional(),
+    escalation_level: z.enum(['site', 'operations', 'executive', 'client_notified']).default('site'),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Please provide a site, category, severity, and factual narrative (min 10 chars).' });
+    return;
+  }
+
+  const photoValidation = validatePhotoData(parsed.data.photo_data);
+  if (!photoValidation.ok) {
+    res.status(400).json({ error: photoValidation.error });
     return;
   }
 
@@ -1486,9 +1686,16 @@ app.post('/api/fieldforce/incidents', requireAuth, requireOrg, (req, res) => {
   }
 
   const id = `inc-${crypto.randomUUID().slice(0, 12)}`;
+  const obCount = (db.prepare('SELECT COUNT(*) AS c FROM ff_incidents WHERE organization_id = ?').get(req.auth!.orgId) as { c: number }).c;
+  const obNumber = `OB-${new Date().getFullYear()}-${String(obCount + 1).padStart(4, '0')}`;
+  const escalatedAt = parsed.data.escalation_level !== 'site' ? new Date().toISOString() : null;
+
   db.prepare(`
-    INSERT INTO ff_incidents (id, organization_id, site_id, post_id, reported_by, reported_by_name, occurrence_time, category, severity, narrative, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+    INSERT INTO ff_incidents (
+      id, organization_id, site_id, post_id, reported_by, reported_by_name, occurrence_time,
+      entry_type, ob_number, category, severity, narrative, voice_transcript, photo_data, escalation_level, escalated_at, status
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
   `).run(
     id,
     req.auth!.orgId,
@@ -1497,19 +1704,25 @@ app.post('/api/fieldforce/incidents', requireAuth, requireOrg, (req, res) => {
     req.auth!.userId,
     req.auth!.fullName,
     parsed.data.occurrence_time,
+    parsed.data.entry_type,
+    obNumber,
     parsed.data.category,
     parsed.data.severity,
-    parsed.data.narrative
+    parsed.data.narrative,
+    parsed.data.voice_transcript ?? null,
+    photoValidation.value,
+    parsed.data.escalation_level,
+    escalatedAt
   );
 
   writeAuditEvent({
     organizationId: req.auth!.orgId!,
     actorId: req.auth!.userId,
     actorName: req.auth!.fullName,
-    action: 'incident.reported',
+    action: parsed.data.entry_type === 'occurrence' ? 'occurrence.logged' : 'incident.reported',
     entityType: 'ff_incidents',
     entityId: id,
-    metadata: { category: parsed.data.category, severity: parsed.data.severity },
+    metadata: { ob_number: obNumber, category: parsed.data.category, severity: parsed.data.severity, has_photo: Boolean(photoValidation.value) },
   });
 
   const incident = db.prepare('SELECT * FROM ff_incidents WHERE id = ?').get(id);
@@ -1912,9 +2125,15 @@ app.post('/api/assistant/query', requireAuth, requireOrg, (req, res) => {
     const assignedShifts = (
       db.prepare("SELECT COUNT(DISTINCT employee_id) as cnt FROM ff_assignments WHERE organization_id = ? AND status != 'cancelled'").get(orgId) as { cnt: number }
     ).cnt;
-    const payrollNote = queryText.includes('payroll')
-      ? ' Note: Automated KES Payroll calculation (Module 06) is an Upcoming module and has not been enabled yet, so no payroll totals are fabricated.'
-      : '';
+    let payrollNote = '';
+    if (queryText.includes('payroll')) {
+      const latestRun = db
+        .prepare('SELECT period_label, status, total_net_kes FROM ff_payroll_runs WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1')
+        .get(orgId) as { period_label: string; status: string; total_net_kes: number } | undefined;
+      payrollNote = latestRun
+        ? ` Latest FieldForce Payroll Run "${latestRun.period_label}" (${latestRun.status}) totals KES ${latestRun.total_net_kes.toLocaleString()} net.`
+        : ' No payroll runs generated yet under FieldForce -> Payroll.';
+    }
 
     res.json({
       topic: 'deployment',
@@ -1955,6 +2174,101 @@ app.post('/api/assistant/query', requireAuth, requireOrg, (req, res) => {
       agentStatus: 'active',
     },
     answer: `Routed to FieldForce Agent (Active V1): ${understaffed.length} published shift(s) are currently below required post staffing (${shifts.length} total published shifts). Open FieldForce -> Shifts to assign active guards with overlap protection.`,
+  });
+});
+
+// ==================== ADMIN SYSTEM DIAGNOSTICS ====================
+
+app.get('/api/admin/diagnostics', requireAuth, requireOrg, (req, res) => {
+  if (!hasRole(req, ['owner', 'admin'])) {
+    res.status(403).json({ error: 'System diagnostics are restricted to Owners and Admins.' });
+    return;
+  }
+
+  const orgId = req.auth!.orgId!;
+  const startNs = process.hrtime.bigint();
+  const probe = db.prepare('SELECT 1 AS ok').get() as { ok: number } | undefined;
+  const elapsedMs = Number(process.hrtime.bigint() - startNs) / 1_000_000;
+
+  const journalMode = String(db.pragma('journal_mode', { simple: true }) ?? 'unknown');
+  const foreignKeys = Boolean(db.pragma('foreign_keys', { simple: true }));
+  const busyTimeoutMs = Number(db.pragma('busy_timeout', { simple: true }) ?? 0);
+  const synchronousMode = String(db.pragma('synchronous', { simple: true }) ?? 'unknown');
+  const pageSize = Number(db.pragma('page_size', { simple: true }) ?? 0);
+  const pageCount = Number(db.pragma('page_count', { simple: true }) ?? 0);
+
+  const tableCountRow = db
+    .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .get() as { count: number };
+
+  let dbExists = false;
+  let dbSizeBytes = 0;
+  let dbModifiedAt: string | null = null;
+  let walExists = false;
+  let walSizeBytes = 0;
+
+  try {
+    const stat = fs.statSync(dbPath);
+    dbExists = stat.isFile();
+    dbSizeBytes = stat.size;
+    dbModifiedAt = stat.mtime.toISOString();
+  } catch {
+    dbExists = false;
+  }
+
+  try {
+    const walStat = fs.statSync(`${dbPath}-wal`);
+    walExists = walStat.isFile();
+    walSizeBytes = walStat.size;
+  } catch {
+    walExists = false;
+  }
+
+  const countForOrg = (table: string): number => {
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE organization_id = ?`).get(orgId) as {
+      count: number;
+    };
+    return row.count;
+  };
+
+  res.json({
+    express: {
+      status: 'online',
+      port: Number(process.env.PORT || 3000),
+      nodeVersion: process.version,
+      environment: process.env.NODE_ENV === 'production' ? 'production' : 'development',
+      uptimeSeconds: Math.floor(process.uptime()),
+      serverTime: new Date().toISOString(),
+      timezone: 'Africa/Nairobi',
+    },
+    database: {
+      engine: 'SQLite (better-sqlite3)',
+      connected: Boolean(db.open && probe?.ok === 1),
+      path: dbPath,
+      exists: dbExists,
+      sizeBytes: dbSizeBytes,
+      lastModifiedAt: dbModifiedAt,
+      walExists,
+      walSizeBytes,
+      journalMode,
+      foreignKeys,
+      busyTimeoutMs,
+      synchronousMode,
+      pageSize,
+      pageCount,
+      tableCount: tableCountRow.count,
+      queryLatencyMs: Number(elapsedMs.toFixed(3)),
+    },
+    tenantCounts: {
+      employees: countForOrg('ff_employees'),
+      clients: countForOrg('ff_clients'),
+      sites: countForOrg('ff_sites'),
+      posts: countForOrg('ff_posts'),
+      shifts: countForOrg('ff_shifts'),
+      attendanceEvents: countForOrg('ff_attendance_events'),
+      incidents: countForOrg('ff_incidents'),
+      auditEvents: countForOrg('audit_events'),
+    },
   });
 });
 

@@ -9,7 +9,8 @@ export type OrgRole =
   | 'hr_manager'
   | 'supervisor'
   | 'guard'
-  | 'finance_manager';
+  | 'finance_manager'
+  | 'client';
 
 export interface SessionClaims {
   userId: string;
@@ -25,6 +26,7 @@ export interface AuthContext {
   phoneNumber: string;
   orgId: string | null;
   role: OrgRole | null;
+  clientId?: string | null;
   isDemo: boolean;
 }
 
@@ -111,23 +113,26 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
   let orgId = claims.orgId;
   let role: OrgRole | null = null;
+  let clientId: string | null = null;
 
   if (orgId) {
     const membership = db
-      .prepare('SELECT role, status FROM organization_memberships WHERE organization_id = ? AND user_id = ?')
-      .get(orgId, user.id) as { role: OrgRole; status: string } | undefined;
+      .prepare('SELECT role, client_id, status FROM organization_memberships WHERE organization_id = ? AND user_id = ?')
+      .get(orgId, user.id) as { role: OrgRole; client_id: string | null; status: string } | undefined;
     if (!membership || membership.status !== 'active') {
       orgId = null;
     } else {
       role = membership.role;
+      clientId = membership.client_id ?? null;
     }
   } else {
     const firstMembership = db
-      .prepare("SELECT organization_id, role FROM organization_memberships WHERE user_id = ? AND status = 'active' LIMIT 1")
-      .get(user.id) as { organization_id: string; role: OrgRole } | undefined;
+      .prepare("SELECT organization_id, role, client_id FROM organization_memberships WHERE user_id = ? AND status = 'active' LIMIT 1")
+      .get(user.id) as { organization_id: string; role: OrgRole; client_id: string | null } | undefined;
     if (firstMembership) {
       orgId = firstMembership.organization_id;
       role = firstMembership.role;
+      clientId = firstMembership.client_id ?? null;
     }
   }
 
@@ -138,6 +143,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     phoneNumber: user.phone_number || '',
     orgId,
     role,
+    clientId,
     isDemo: Boolean(claims.isDemo && orgId === 'org-nairobi-001'),
   };
 

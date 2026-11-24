@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
+  Activity,
   AlertTriangle,
   ArrowRight,
   Bell,
@@ -8,11 +9,15 @@ import {
   CalendarClock,
   Check,
   Compass,
+  Copy,
   CreditCard,
+  Database,
   Download,
   Megaphone,
+  RefreshCw,
   Search,
   Send,
+  Server,
   Shield,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
@@ -148,7 +153,7 @@ export const UpcomingModulePage: React.FC = () => {
 };
 
 export const HomePage: React.FC = () => {
-  const { loading, user, organization, catalog, entitlements, employees, shifts, assignments, posts, incidents } =
+  const { loading, user, organization, currentRole, catalog, entitlements, employees, shifts, assignments, posts, incidents } =
     useApp();
 
   const waitlistedSlugs = new Set(entitlements.filter((e) => e.status === 'waitlisted').map((e) => e.slug));
@@ -158,8 +163,12 @@ export const HomePage: React.FC = () => {
   const understaffedCount = shifts.filter((s) => {
     const post = posts.find((p) => p.id === s.post_id);
     const assignedCount = assignments.filter((a) => a.shift_id === s.id && a.status !== 'cancelled').length;
-    return assignedCount < (post?.required_guards ?? 1);
+    return countBelow(assignedCount, post?.required_guards ?? 1);
   }).length;
+
+  function countBelow(assignedCount: number, reqGuards: number) {
+    return assignedCount < reqGuards;
+  }
 
   const openIncidents = incidents.filter((i) => i.status === 'open' || i.status === 'under_investigation');
   const pendingAiDrafts = incidents.filter((i) => Boolean(i.ai_draft_summary) && !i.ai_approved_at);
@@ -212,18 +221,28 @@ export const HomePage: React.FC = () => {
             </div>
             <h1 className="text-2xl font-bold mt-1.5">Welcome back, {user?.fullName}</h1>
             <p className="text-sm text-slate-300 mt-1 max-w-2xl">
-              {activeGuards} active guard(s) · {shifts.length} published shift(s) · {openIncidents.length} active incident(s).
+              {currentRole === 'client'
+                ? 'Authorised Client Portal access · View your guarded sites, attendance SLA, incidents, and invoices.'
+                : `${activeGuards} active guard(s) · ${shifts.length} published shift(s) · ${openIncidents.length} active incident(s).`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 shrink-0">
-            <Link to="/app/fieldforce/dashboard">
-              <Button>Open FieldForce Command</Button>
-            </Link>
-            <Link to="/app/ai-assistant">
-              <Button variant="secondary">
-                <Bot className="h-4 w-4 text-[#059669]" /> SOP Assistant
-              </Button>
-            </Link>
+            {currentRole === 'client' ? (
+              <Link to="/app/fieldforce/client-portal">
+                <Button>Open Client Service Portal</Button>
+              </Link>
+            ) : (
+              <>
+                <Link to="/app/fieldforce/dashboard">
+                  <Button>Open FieldForce Command</Button>
+                </Link>
+                <Link to="/app/fieldforce/intelligence">
+                  <Button variant="secondary">
+                    <Bot className="h-4 w-4 text-[#059669]" /> AI Intelligence
+                  </Button>
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </Card>
@@ -992,8 +1011,43 @@ export const ReportsPage: React.FC = () => {
   );
 };
 
-export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' }> = ({ tab }) => {
-  const { organization, updateOrganization, members, inviteMember, updateMemberRole, auditEvents, currentRole } = useApp();
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function formatUptime(totalSeconds: number): string {
+  const hrs = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+}
+
+export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' | 'diagnostics' }> = ({ tab }) => {
+  const {
+    organization,
+    updateOrganization,
+    members,
+    inviteMember,
+    updateMemberRole,
+    auditEvents,
+    currentRole,
+    diagnostics,
+    diagnosticsLoading,
+    diagnosticsError,
+    fetchDiagnostics,
+    employees,
+    clients,
+    sites,
+    posts,
+    shifts,
+    attendance,
+    incidents,
+  } = useApp();
   const [searchParams] = useSearchParams();
   const isRolesView = searchParams.get('view') === 'roles';
 
@@ -1009,10 +1063,17 @@ export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' 
   const [mRole, setMRole] = useState<OrgRole>('supervisor');
   const [auditSearch, setAuditSearch] = useState('');
   const [auditPage, setAuditPage] = useState(1);
+  const [copiedPath, setCopiedPath] = useState(false);
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
 
   const isAdmin = currentRole === 'owner' || currentRole === 'admin';
   const PAGE_SIZE = 10;
+
+  useEffect(() => {
+    if (tab === 'diagnostics' && isAdmin) {
+      fetchDiagnostics();
+    }
+  }, [tab, isAdmin, organization?.id, fetchDiagnostics]);
 
   const filteredAudit = useMemo(() => {
     const q = auditSearch.trim().toLowerCase();
@@ -1079,6 +1140,14 @@ export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' 
         >
           Audit Logs
         </Link>
+        {isAdmin && (
+          <Link
+            to="/app/settings/diagnostics"
+            className={`px-3 py-1.5 rounded-md text-xs font-medium ${tab === 'diagnostics' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'}`}
+          >
+            Diagnostics
+          </Link>
+        )}
       </div>
 
       {feedback && <InlineAlert tone={feedback.tone}>{feedback.msg}</InlineAlert>}
@@ -1167,9 +1236,10 @@ export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' 
                 >
                   <option value="operations_manager">Operations Manager</option>
                   <option value="hr_manager">HR Manager</option>
+                  <option value="finance_manager">Finance Manager</option>
                   <option value="supervisor">Field Supervisor</option>
                   <option value="guard">Security Guard</option>
-                  <option value="finance_manager">Finance Manager</option>
+                  <option value="client">Client Portal User</option>
                   <option value="admin">Admin</option>
                 </select>
                 <Button type="submit">Add Member</Button>
@@ -1207,9 +1277,10 @@ export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' 
                           <option value="admin">admin</option>
                           <option value="operations_manager">operations_manager</option>
                           <option value="hr_manager">hr_manager</option>
+                          <option value="finance_manager">finance_manager</option>
                           <option value="supervisor">supervisor</option>
                           <option value="guard">guard</option>
-                          <option value="finance_manager">finance_manager</option>
+                          <option value="client">client</option>
                         </select>
                       ) : (
                         <span className="font-mono text-xs">{m.role}</span>
@@ -1285,6 +1356,218 @@ export const SettingsPage: React.FC<{ tab: 'organisation' | 'members' | 'audit' 
             </>
           )}
         </Card>
+      )}
+      {tab === 'diagnostics' && (
+        <div className="space-y-6">
+          {!isAdmin ? (
+            <InlineAlert tone="error">
+              System diagnostics are restricted to Organisation Owners and Admins.
+            </InlineAlert>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusLabel
+                    label={diagnostics?.express.status === 'online' ? 'Express Server Online' : 'Checking Express'}
+                    tone={diagnostics?.express.status === 'online' ? 'emerald' : 'amber'}
+                  />
+                  <StatusLabel
+                    label={diagnostics?.database.connected ? 'SQLite Connected' : 'SQLite Disconnected'}
+                    tone={diagnostics?.database.connected ? 'emerald' : 'rose'}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={diagnosticsLoading}
+                  onClick={() => fetchDiagnostics()}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${diagnosticsLoading ? 'animate-spin' : ''}`} />
+                  {diagnosticsLoading ? 'Checking...' : 'Run Health Check'}
+                </Button>
+              </div>
+
+              {diagnosticsError && <InlineAlert tone="error">{diagnosticsError}</InlineAlert>}
+
+              {diagnosticsLoading && !diagnostics ? (
+                <LoadingSkeleton rows={3} />
+              ) : diagnostics ? (
+                <>
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <Card className="p-5">
+                      <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                        <span>Express Runtime</span>
+                        <Server className="h-4 w-4 text-[#059669]" />
+                      </div>
+                      <div className="text-lg font-bold text-[#0B132B] mt-1 font-mono">
+                        Port {diagnostics.express.port}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1 font-mono">
+                        {diagnostics.express.nodeVersion} · {diagnostics.express.environment}
+                      </div>
+                    </Card>
+
+                    <Card className="p-5">
+                      <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                        <span>Server Uptime</span>
+                        <Activity className="h-4 w-4 text-[#059669]" />
+                      </div>
+                      <div className="text-lg font-bold text-[#0B132B] mt-1 font-mono tabular-nums">
+                        {formatUptime(diagnostics.express.uptimeSeconds)}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1 font-mono tabular-nums">
+                        {formatNairobiDateTime(diagnostics.express.serverTime)} EAT
+                      </div>
+                    </Card>
+
+                    <Card className="p-5">
+                      <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                        <span>Query Latency</span>
+                        <Database className="h-4 w-4 text-[#059669]" />
+                      </div>
+                      <div className="text-lg font-bold text-[#0B132B] mt-1 font-mono tabular-nums">
+                        {diagnostics.database.queryLatencyMs} ms
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1 font-mono">
+                        SELECT 1 probe · {diagnostics.database.tableCount} tables
+                      </div>
+                    </Card>
+
+                    <Card className="p-5">
+                      <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                        <span>Database File Size</span>
+                        <Shield className="h-4 w-4 text-[#059669]" />
+                      </div>
+                      <div className="text-lg font-bold text-[#0B132B] mt-1 font-mono tabular-nums">
+                        {formatBytes(diagnostics.database.sizeBytes)}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1 font-mono tabular-nums">
+                        WAL: {diagnostics.database.walExists ? formatBytes(diagnostics.database.walSizeBytes) : 'none'}
+                      </div>
+                    </Card>
+                  </div>
+
+                  <div className="grid lg:grid-cols-2 gap-6">
+                    <Card className="p-6 space-y-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <h2 className="font-bold text-base text-[#0B132B] flex items-center gap-2">
+                          <Database className="h-4 w-4 text-[#059669]" /> SQLite Storage &amp; Pragma Health
+                        </h2>
+                        <Badge tone="navy">{diagnostics.database.journalMode.toUpperCase()}</Badge>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                            Resolved Database File Path
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(diagnostics.database.path);
+                              setCopiedPath(true);
+                              setTimeout(() => setCopiedPath(false), 1800);
+                            }}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-[#059669] hover:underline cursor-pointer"
+                          >
+                            {copiedPath ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                            {copiedPath ? 'Copied' : 'Copy path'}
+                          </button>
+                        </div>
+                        <div className="font-mono text-xs text-[#0B132B] break-all select-all">
+                          {diagnostics.database.path}
+                        </div>
+                      </div>
+
+                      <dl className="grid grid-cols-2 gap-3 text-xs">
+                        <div className="p-3 rounded-lg border border-slate-100 bg-white">
+                          <dt className="text-slate-500">Engine</dt>
+                          <dd className="font-mono font-semibold text-slate-900 mt-0.5">{diagnostics.database.engine}</dd>
+                        </div>
+                        <div className="p-3 rounded-lg border border-slate-100 bg-white">
+                          <dt className="text-slate-500">File On Disk</dt>
+                          <dd className="font-mono font-semibold text-slate-900 mt-0.5">
+                            {diagnostics.database.exists ? 'Present' : 'Missing'}
+                          </dd>
+                        </div>
+                        <div className="p-3 rounded-lg border border-slate-100 bg-white">
+                          <dt className="text-slate-500">Foreign Keys</dt>
+                          <dd className="font-mono font-semibold text-slate-900 mt-0.5">
+                            {diagnostics.database.foreignKeys ? 'ON (Enforced)' : 'OFF'}
+                          </dd>
+                        </div>
+                        <div className="p-3 rounded-lg border border-slate-100 bg-white">
+                          <dt className="text-slate-500">Busy Timeout</dt>
+                          <dd className="font-mono font-semibold text-slate-900 mt-0.5">
+                            {diagnostics.database.busyTimeoutMs} ms
+                          </dd>
+                        </div>
+                        <div className="p-3 rounded-lg border border-slate-100 bg-white">
+                          <dt className="text-slate-500">Page Geometry</dt>
+                          <dd className="font-mono font-semibold text-slate-900 mt-0.5">
+                            {diagnostics.database.pageCount} × {diagnostics.database.pageSize} B
+                          </dd>
+                        </div>
+                        <div className="p-3 rounded-lg border border-slate-100 bg-white">
+                          <dt className="text-slate-500">Last Modified (EAT)</dt>
+                          <dd className="font-mono font-semibold text-slate-900 mt-0.5">
+                            {diagnostics.database.lastModifiedAt
+                              ? formatNairobiDateTime(diagnostics.database.lastModifiedAt)
+                              : '—'}
+                          </dd>
+                        </div>
+                      </dl>
+                    </Card>
+
+                    <Card className="p-6 space-y-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <h2 className="font-bold text-base text-[#0B132B] flex items-center gap-2">
+                          <Server className="h-4 w-4 text-[#059669]" /> Context &amp; Tenant Ledger Integrity
+                        </h2>
+                        <Badge tone="emerald">{organization?.name}</Badge>
+                      </div>
+                      <p className="text-xs text-slate-600">
+                        Compares active <code className="font-mono text-slate-800">AppContext</code> state with live SQLite
+                        row counts scoped strictly to your organisation.
+                      </p>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-50 text-slate-500 border-b border-slate-200">
+                            <tr>
+                              <th className="p-2.5 font-medium">Dataset</th>
+                              <th className="p-2.5 font-medium text-right">AppContext</th>
+                              <th className="p-2.5 font-medium text-right">SQLite DB</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono tabular-nums">
+                            {[
+                              { label: 'Guards (ff_employees)', ctx: employees.length, db: diagnostics.tenantCounts.employees },
+                              { label: 'Clients (ff_clients)', ctx: clients.length, db: diagnostics.tenantCounts.clients },
+                              { label: 'Sites (ff_sites)', ctx: sites.length, db: diagnostics.tenantCounts.sites },
+                              { label: 'Posts (ff_posts)', ctx: posts.length, db: diagnostics.tenantCounts.posts },
+                              { label: 'Shifts (ff_shifts)', ctx: shifts.length, db: diagnostics.tenantCounts.shifts },
+                              { label: 'Attendance (ff_attendance_events)', ctx: attendance.length, db: diagnostics.tenantCounts.attendanceEvents },
+                              { label: 'Incidents (ff_incidents)', ctx: incidents.length, db: diagnostics.tenantCounts.incidents },
+                              { label: 'Audit Trail (audit_events)', ctx: auditEvents.length, db: diagnostics.tenantCounts.auditEvents },
+                            ].map((row) => (
+                              <tr key={row.label} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-sans font-medium text-slate-700">{row.label}</td>
+                                <td className="p-2.5 text-right text-slate-900">{row.ctx}</td>
+                                <td className="p-2.5 text-right text-[#059669] font-semibold">{row.db}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  </div>
+                </>
+              ) : null}
+            </>
+          )}
+        </div>
       )}
     </div>
   );
