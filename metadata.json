@@ -1,0 +1,6 @@
+{
+  "name": "AI Africa — FieldForce AI",
+  "description": "Multi-tenant East African operations platform featuring FieldForce AI Security Edition for guard rostering, attendance verification, and human-approved incident reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
